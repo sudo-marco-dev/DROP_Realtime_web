@@ -22,6 +22,16 @@ CREATE TABLE IF NOT EXISTS public.camera_commands (
     notes TEXT
 );
 
+CREATE TABLE IF NOT EXISTS public.webrtc_signaling (
+    id BIGSERIAL PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,       -- 'dashboard' or camera id like 'phone1'
+    receiver_id TEXT,              -- target, null for broadcast
+    type TEXT NOT NULL CHECK (type IN ('offer', 'answer', 'ice-candidate')),
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
 -- Enable Realtime replication
 -- Safely remove from publication first (ignore if not already added)
 DO $$
@@ -34,18 +44,26 @@ BEGIN
   ALTER PUBLICATION supabase_realtime DROP TABLE public.events;
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
+DO $$
+BEGIN
+  ALTER PUBLICATION supabase_realtime DROP TABLE public.webrtc_signaling;
+EXCEPTION WHEN undefined_object THEN NULL;
+END $$;
 
 -- Enable replica identity full so we get old/new values in updates
 ALTER TABLE public.camera_commands REPLICA IDENTITY FULL;
 ALTER TABLE public.events REPLICA IDENTITY FULL;
+ALTER TABLE public.webrtc_signaling REPLICA IDENTITY FULL;
 
 -- Add tables to the supabase_realtime publication
 ALTER PUBLICATION supabase_realtime ADD TABLE public.camera_commands;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.events;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.webrtc_signaling;
 
 -- 2. Configure Row Level Security (RLS)
 ALTER TABLE public.events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.camera_commands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.webrtc_signaling ENABLE ROW LEVEL SECURITY;
 
 -- Allow public access for this demo/simulation context
 CREATE POLICY "Allow public SELECT on events" ON public.events FOR SELECT USING (true);
@@ -54,6 +72,9 @@ CREATE POLICY "Allow public INSERT on events" ON public.events FOR INSERT WITH C
 CREATE POLICY "Allow public SELECT on camera_commands" ON public.camera_commands FOR SELECT USING (true);
 CREATE POLICY "Allow public INSERT on camera_commands" ON public.camera_commands FOR INSERT WITH CHECK (true);
 CREATE POLICY "Allow public UPDATE on camera_commands" ON public.camera_commands FOR UPDATE USING (true);
+
+CREATE POLICY "Allow all SELECT on webrtc_signaling" ON public.webrtc_signaling FOR SELECT USING (true);
+CREATE POLICY "Allow all INSERT on webrtc_signaling" ON public.webrtc_signaling FOR INSERT WITH CHECK (true);
 
 -- 3. Storage Setup (Public bucket 'drop-captures')
 INSERT INTO storage.buckets (id, name, public)

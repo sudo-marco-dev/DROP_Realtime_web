@@ -3,22 +3,26 @@
 import { Suspense, useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-import { Camera, Smartphone, Activity, ShieldAlert, CheckCircle } from 'lucide-react';
+import { Camera, Smartphone, Activity, ShieldAlert, CheckCircle, Radio } from 'lucide-react';
 
 function CameraClient() {
   const searchParams = useSearchParams();
   const cameraId = searchParams.get('camera_id') || 'phone1';
-  
+
   const [streamActive, setStreamActive] = useState(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const [logs, setLogs] = useState<string[]>([]);
   const [lastCapturedImage, setLastCapturedImage] = useState<string | null>(null);
   const [flashActive, setFlashActive] = useState(false);
   const [dbConnected, setDbConnected] = useState(true);
+  const [isStreaming, setIsStreaming] = useState(false); // WebRTC live streaming active
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null); // persistent ref for WebRTC track sharing
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const signalingChannelRef = useRef<any>(null);
 
   const addLog = (msg: string) => {
     const time = new Date().toLocaleTimeString();
@@ -28,10 +32,13 @@ function CameraClient() {
   // 1. Initial Load & Camera Toggle: Request video stream permission
   useEffect(() => {
     addLog(`Initializing camera node "${cameraId}" (${facingMode} facing)...`);
-    
+
     // Stop any existing streams before requesting a new one
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
     }
 
     async function startCamera() {
@@ -46,6 +53,7 @@ function CameraClient() {
         });
 
         streamRef.current = stream;
+        localStreamRef.current = stream; // keep for WebRTC
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
@@ -53,10 +61,10 @@ function CameraClient() {
         addLog(`CCTV Video Feed Active (Facing: ${facingMode})`);
       } catch (err: any) {
         addLog(`Camera Access Error: ${err.message || err}`);
-        // Fallback to basic video request if preferred mode fails
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
           streamRef.current = stream;
+          localStreamRef.current = stream;
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
           }
@@ -74,14 +82,19 @@ function CameraClient() {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
+      // Clean up WebRTC
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
+      }
+      signalingChannelRef.current?.unsubscribe();
     };
   }, [cameraId, facingMode]);
 
-  // 2. Subscribe to Supabase Realtime Commands
+  // 2. Subscribe to Supabase Realtime Commands (camera_commands for capture)
   useEffect(() => {
     addLog(`Joining realtime commands channel for camera "${cameraId}"`);
-    
-    // Connect to Supabase Realtime channel
+
     const commandChannel = supabase
       .channel(`cctv-commands:${cameraId}`)
       .on(
@@ -95,7 +108,7 @@ function CameraClient() {
         async (payload) => {
           const cmd = payload.new;
           addLog(`Realtime Command Received: ID ${cmd.id}, status: ${cmd.status}`);
-          
+
           if (cmd.status === 'pending') {
             await handleCapture(cmd);
           }
@@ -115,7 +128,124 @@ function CameraClient() {
     };
   }, [cameraId]);
 
-  // 3. Frame capture and Supabase upload handler
+  // 3. Subscribe to WebRTC signaling for live view
+  useEffect(() => {
+    if (!streamActive) return;
+
+    addLog('Joining WebRTC signaling channel for live view...');
+
+    const webrtcChannel = supabase
+      .channel(`webrtc-${cameraId}`)
+      .on('postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'webrtc_signaling',
+          filter: `room_id=eq.${cameraId}`
+        },
+        async (payload: any) => {
+          const row = payload.new;
+          // Only process messages addressed to this camera
+          if (row.receiver_id !== cameraId) return;
+
+          if (row.type === 'offer') {
+            addLog('WebRTC offer received from dashboard. Creating answer...');
+            await handleOffer(row.payload);
+          } else if (row.type === 'ice-candidate') {
+            if (peerConnectionRef.current) {
+              try {
+                await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(row.payload));
+                addLog('ICE candidate added from dashboard');
+              } catch (e: any) {
+                addLog(`ICE candidate error: ${e.message}`);
+              }
+            }
+          }
+        }
+      )
+      .subscribe((status: string) => {
+        if (status === 'SUBSCRIBED') {
+          addLog('WebRTC signaling channel ready');
+        }
+      });
+
+    signalingChannelRef.current = webrtcChannel;
+
+    return () => {
+      supabase.removeChannel(webrtcChannel);
+    };
+  }, [cameraId, streamActive]);
+
+  // 4. Handle incoming WebRTC offer
+  const handleOffer = async (offerPayload: any) => {
+    // Close any existing peer connection
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+
+    if (!localStreamRef.current) {
+      addLog('No local media stream available for WebRTC');
+      return;
+    }
+
+    try {
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      peerConnectionRef.current = pc;
+
+      // Add local tracks
+      localStreamRef.current.getTracks().forEach(track => {
+        pc.addTrack(track, localStreamRef.current!);
+      });
+
+      // Send ICE candidates to signaling
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          supabase.from('webrtc_signaling').insert({
+            room_id: cameraId,
+            sender_id: cameraId,
+            receiver_id: 'dashboard',
+            type: 'ice-candidate',
+            payload: event.candidate.toJSON()
+          }).then();
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        addLog(`WebRTC connection state: ${pc.connectionState}`);
+        setIsStreaming(pc.connectionState === 'connected');
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          setIsStreaming(false);
+        }
+      };
+
+      // Set remote description (offer)
+      await pc.setRemoteDescription(new RTCSessionDescription(offerPayload));
+      addLog('Remote description set (offer)');
+
+      // Create and set answer
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      addLog('Answer created and set locally');
+
+      // Send answer via Supabase
+      await supabase.from('webrtc_signaling').insert({
+        room_id: cameraId,
+        sender_id: cameraId,
+        receiver_id: 'dashboard',
+        type: 'answer',
+        payload: { type: answer.type, sdp: answer.sdp }
+      });
+      addLog('Answer sent to signaling channel');
+
+    } catch (e: any) {
+      addLog(`WebRTC offer handling error: ${e.message}`);
+    }
+  };
+
+  // 5. Frame capture and Supabase upload handler (existing)
   const handleCapture = async (cmd: any) => {
     if (!videoRef.current || !canvasRef.current) {
       addLog('Capture failed: video/canvas stream elements not ready');
@@ -123,8 +253,7 @@ function CameraClient() {
     }
 
     addLog(`Capturing frame for command correlation: ${cmd.correlation_id}`);
-    
-    // Flash effect
+
     setFlashActive(true);
     setTimeout(() => setFlashActive(false), 150);
 
@@ -134,12 +263,10 @@ function CameraClient() {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // Draw current video frame to canvas
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Convert to blob and upload
       canvas.toBlob(async (blob) => {
         if (!blob) {
           addLog('Failed to generate image blob from canvas');
@@ -151,7 +278,6 @@ function CameraClient() {
 
         addLog('Uploading photo to Supabase storage bucket "drop-captures"...');
 
-        // Upload image to Supabase Storage
         const { error: uploadError } = await supabase.storage
           .from('drop-captures')
           .upload(filePath, blob, {
@@ -165,7 +291,6 @@ function CameraClient() {
           throw uploadError;
         }
 
-        // Get public URL
         const { data: urlData } = supabase.storage
           .from('drop-captures')
           .getPublicUrl(filePath);
@@ -174,7 +299,6 @@ function CameraClient() {
         setLastCapturedImage(imageUrl);
         addLog(`Photo upload success! Public URL: ${imageUrl}`);
 
-        // Update command status to 'done'
         addLog(`Updating command status to "done" for command ID: ${cmd.id}...`);
         const { error: updateError } = await supabase
           .from('camera_commands')
@@ -185,9 +309,8 @@ function CameraClient() {
           addLog(`Status update warning: ${updateError.message}`);
         }
 
-        // Insert new row in events table to register the capture
         addLog('Inserting audit log event in "events" table...');
-        const triggerNotes = cmd.notes 
+        const triggerNotes = cmd.notes
           ? `${cmd.notes} (Remote photo uploaded by ${cameraId})`
           : `Remote photo uploaded by ${cameraId}`;
 
@@ -252,7 +375,7 @@ function CameraClient() {
         border: '1px solid rgba(255,255,255,0.05)',
         boxShadow: '0 25px 50px -12px rgba(0,0,0,0.6)',
       }}>
-        
+
         {/* Header */}
         <div style={{
           display: 'flex',
@@ -294,7 +417,7 @@ function CameraClient() {
                 {dbConnected ? 'CONNECTED' : 'DISCONNECTED'}
               </span>
             </div>
-            <button 
+            <button
               onClick={toggleCamera}
               style={{
                 fontSize: '10px',
@@ -326,11 +449,11 @@ function CameraClient() {
           justifyContent: 'center',
         }}>
           {streamActive ? (
-            <video 
-              ref={videoRef} 
-              autoPlay 
-              playsInline 
-              muted 
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
               onLoadedMetadata={() => videoRef.current?.play()}
               style={{
                 width: '100%',
@@ -371,8 +494,31 @@ function CameraClient() {
             textTransform: 'uppercase' as const,
           }}>
             <Activity size={10} />
-            LIVE CCTV
+            {isStreaming ? 'STREAMING' : 'LIVE CCTV'}
           </div>
+
+          {/* WebRTC Streaming Badge */}
+          {isStreaming && (
+            <div style={{
+              position: 'absolute',
+              top: '8px',
+              right: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              background: 'rgba(16, 185, 129, 0.9)',
+              color: 'white',
+              fontWeight: 800,
+              fontSize: '8px',
+              padding: '2px 6px',
+              borderRadius: '4px',
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase' as const,
+            }}>
+              <Radio size={8} />
+              WEBRTC
+            </div>
+          )}
         </div>
 
         {/* Last Snapshot Preview */}
@@ -399,9 +545,9 @@ function CameraClient() {
               <span>Snapshot Uploaded</span>
             </div>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img 
-              src={lastCapturedImage} 
-              alt="Last Captured frame" 
+            <img
+              src={lastCapturedImage}
+              alt="Last Captured frame"
               style={{
                 width: '100%',
                 height: '80px',
