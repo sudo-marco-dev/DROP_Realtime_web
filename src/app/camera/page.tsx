@@ -218,30 +218,94 @@ function CameraClient() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 flex flex-col items-center justify-start md:justify-center p-2 sm:p-4 overflow-y-auto">
+    <main style={{
+      minHeight: '100vh',
+      background: '#020617',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'flex-start',
+      padding: '8px',
+      overflowY: 'auto',
+      boxSizing: 'border-box',
+    }}>
       {flashActive && (
-        <div className="fixed inset-0 bg-white z-50 animate-ping pointer-events-none" />
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'white',
+          zIndex: 50,
+          pointerEvents: 'none',
+          animation: 'ping 0.15s ease-out',
+        }} />
       )}
 
-      <div className="glass-card max-w-md w-full p-4 sm:p-6 flex flex-col gap-4 sm:gap-6 relative overflow-hidden border border-white/5 shadow-2xl">
+      <div className="glass-card" style={{
+        maxWidth: '420px',
+        width: '100%',
+        padding: '16px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '14px',
+        position: 'relative',
+        overflow: 'hidden',
+        border: '1px solid rgba(255,255,255,0.05)',
+        boxShadow: '0 25px 50px -12px rgba(0,0,0,0.6)',
+      }}>
         
         {/* Header */}
-        <div className="flex justify-between items-center pb-3 sm:pb-4 border-b border-white/5">
-          <div className="flex items-center gap-2">
-            <Smartphone className="text-purple-400" size={20} />
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          paddingBottom: '12px',
+          borderBottom: '1px solid rgba(255,255,255,0.05)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Smartphone style={{ color: '#a78bfa' }} size={20} />
             <div>
-              <h1 className="font-extrabold text-white leading-none">CCTV Remote</h1>
-              <span className="text-[10px] text-gray-500 font-mono">NODE ID: {cameraId}</span>
+              <h1 style={{
+                fontWeight: 800,
+                color: 'white',
+                lineHeight: 1,
+                fontSize: '16px',
+                margin: 0,
+              }}>CCTV Remote</h1>
+              <span style={{
+                fontSize: '10px',
+                color: '#6b7280',
+                fontFamily: "'Share Tech Mono', monospace",
+              }}>NODE ID: {cameraId}</span>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-1.5 sm:gap-2">
-            <div className="flex items-center gap-2 bg-slate-900 border border-white/5 px-2.5 py-1 rounded text-[10px]">
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              background: '#0f172a',
+              border: '1px solid rgba(255,255,255,0.05)',
+              padding: '4px 10px',
+              borderRadius: '4px',
+              fontSize: '10px',
+            }}>
               <span className={`status-dot ${dbConnected ? 'active' : 'inactive'}`} />
-              <span className="text-gray-400 font-mono">{dbConnected ? 'CONNECTED' : 'DISCONNECTED'}</span>
+              <span style={{ color: '#9ca3af', fontFamily: "'Share Tech Mono', monospace" }}>
+                {dbConnected ? 'CONNECTED' : 'DISCONNECTED'}
+              </span>
             </div>
             <button 
               onClick={toggleCamera}
-              className="text-[10px] bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded shadow"
+              style={{
+                fontSize: '10px',
+                background: '#9333ea',
+                color: 'white',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: 600,
+              }}
             >
               Flip Camera
             </button>
@@ -249,7 +313,18 @@ function CameraClient() {
         </div>
 
         {/* Viewfinder */}
-        <div className="relative aspect-[4/3] w-full bg-black rounded-lg overflow-hidden border border-white/5 flex items-center justify-center">
+        <div style={{
+          position: 'relative',
+          aspectRatio: '4 / 3',
+          width: '100%',
+          background: '#000',
+          borderRadius: '8px',
+          overflow: 'hidden',
+          border: '1px solid rgba(255,255,255,0.05)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}>
           {streamActive ? (
             <video 
               ref={videoRef} 
@@ -257,26 +332,69 @@ function CameraClient() {
               playsInline 
               muted 
               onLoadedMetadata={() => videoRef.current?.play()}
-              className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`}
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                transform: facingMode === 'user' ? 'scaleX(-1)' : 'none',
+              }}
             />
           ) : (
-            <div className="flex flex-col items-center gap-2 text-gray-500 text-sm">
-              <Camera size={24} className="animate-pulse" />
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '8px',
+              color: '#6b7280',
+              fontSize: '14px',
+            }}>
+              <Camera size={24} style={{ opacity: 0.6 }} />
               <span>Requesting camera feed permissions...</span>
             </div>
           )}
 
-          {/* Overlays */}
-          <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-red-600/90 text-white font-extrabold text-[9px] px-2 py-0.5 rounded tracking-widest uppercase">
-            <Activity size={10} className="animate-pulse" />
+          {/* LIVE Badge Overlay */}
+          <div style={{
+            position: 'absolute',
+            top: '8px',
+            left: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            background: 'rgba(220, 38, 38, 0.9)',
+            color: 'white',
+            fontWeight: 800,
+            fontSize: '9px',
+            padding: '3px 8px',
+            borderRadius: '4px',
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase' as const,
+          }}>
+            <Activity size={10} />
             LIVE CCTV
           </div>
         </div>
 
         {/* Last Snapshot Preview */}
         {lastCapturedImage && (
-          <div className="flex flex-col gap-2 bg-white/2 border border-white/5 p-3 rounded-lg">
-            <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-bold uppercase">
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            background: 'rgba(255,255,255,0.02)',
+            border: '1px solid rgba(255,255,255,0.05)',
+            padding: '12px',
+            borderRadius: '8px',
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontSize: '12px',
+              color: '#34d399',
+              fontWeight: 700,
+              textTransform: 'uppercase' as const,
+            }}>
               <CheckCircle size={12} />
               <span>Snapshot Uploaded</span>
             </div>
@@ -284,17 +402,42 @@ function CameraClient() {
             <img 
               src={lastCapturedImage} 
               alt="Last Captured frame" 
-              className="w-full h-24 sm:h-32 object-cover rounded border border-white/5"
+              style={{
+                width: '100%',
+                height: '80px',
+                objectFit: 'cover',
+                borderRadius: '4px',
+                border: '1px solid rgba(255,255,255,0.05)',
+              }}
             />
           </div>
         )}
 
         {/* Logs Console Feed */}
-        <div className="flex flex-col gap-2">
-          <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">CCTV Device Console Logs</span>
-          <div className="bg-black/80 border border-white/5 font-mono text-[10px] text-purple-300 p-3 rounded-lg h-24 sm:h-32 overflow-y-auto flex flex-col gap-1">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <span style={{
+            fontSize: '10px',
+            color: '#6b7280',
+            fontWeight: 700,
+            textTransform: 'uppercase' as const,
+            letterSpacing: '0.05em',
+          }}>CCTV Device Console Logs</span>
+          <div style={{
+            background: 'rgba(0,0,0,0.8)',
+            border: '1px solid rgba(255,255,255,0.05)',
+            fontFamily: "'Share Tech Mono', monospace",
+            fontSize: '10px',
+            color: '#c4b5fd',
+            padding: '12px',
+            borderRadius: '8px',
+            height: '80px',
+            overflowY: 'auto',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '4px',
+          }}>
             {logs.length === 0 ? (
-              <span className="text-gray-600">Awaiting commands...</span>
+              <span style={{ color: '#4b5563' }}>Awaiting commands...</span>
             ) : (
               logs.map((log, idx) => <span key={idx}>{log}</span>)
             )}
@@ -304,7 +447,7 @@ function CameraClient() {
       </div>
 
       {/* Hidden canvas for video framing */}
-      <canvas ref={canvasRef} className="hidden" />
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
     </main>
   );
 }
@@ -312,7 +455,17 @@ function CameraClient() {
 export default function CameraPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-gray-400 font-mono text-sm">
+      <div style={{
+        minHeight: '100vh',
+        background: '#020617',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: '#9ca3af',
+        fontFamily: "'Share Tech Mono', monospace",
+        fontSize: '14px',
+      }}>
         Loading CCTV Camera module...
       </div>
     }>

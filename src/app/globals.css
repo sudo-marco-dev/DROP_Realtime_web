@@ -607,3 +607,75 @@ input:checked + .toggle-slider.danger-slider {
     opacity: 0.8;
   }
 }
+
+/* --- Tailwind Utility Fallbacks for Flexbox, Gaps, Sizing & Responsiveness --- */
+.flex { display: flex !important; }
+.flex-col { flex-direction: column !important; }
+.items-center { align-items: center !important; }
+.items-end { align-items: flex-end !important; }
+.justify-center { justify-content: center !important; }
+.justify-start { justify-content: flex-start !important; }
+.justify-between { justify-content: space-between !important; }
+.w-full { width: 100% !important; }
+.h-full { height: 100% !important; }
+.min-h-screen { min-height: 100vh !important; }
+.overflow-y-auto { overflow-y: auto !important; }
+.relative { position: relative !important; }
+.fixed { position: fixed !important; }
+.inset-0 { top: 0 !important; right: 0 !important; bottom: 0 !important; left: 0 !important; }
+.z-50 { z-index: 50 !important; }
+.pointer-events-none { pointer-events: none !important; }
+.hidden { display: none !important; }
+
+/* Viewport Sizing & Scaling */
+.aspect-\[4\/3\] {
+  aspect-ratio: 4 / 3 !important;
+}
+.object-cover {
+  object-fit: cover !important;
+}
+.object-contain {
+  object-fit: contain !important;
+}
+
+/* Paddings & Margins & Gaps */
+.p-2 { padding: 8px !important; }
+.p-3 { padding: 12px !important; }
+.p-4 { padding: 16px !important; }
+.p-6 { padding: 24px !important; }
+.px-2\.5 { padding-left: 10px !important; padding-right: 10px !important; }
+.py-1 { padding-top: 4px !important; padding-bottom: 4px !important; }
+.pb-3 { padding-bottom: 12px !important; }
+.pb-4 { padding-bottom: 16px !important; }
+.gap-1\.5 { gap: 6px !important; }
+.gap-2 { gap: 8px !important; }
+.gap-3 { gap: 12px !important; }
+.gap-4 { gap: 16px !important; }
+.gap-6 { gap: 24px !important; }
+
+/* Heights */
+.h-24 { height: 96px !important; }
+.h-32 { height: 128px !important; }
+
+/* Borders & Rounding */
+.border-b { border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important; }
+.border-white\/5 { border-color: rgba(255, 255, 255, 0.05) !important; }
+.rounded { border-radius: 4px !important; }
+.rounded-lg { border-radius: 8px !important; }
+
+/* Backgrounds & Colors */
+.bg-slate-900 { background-color: #0f172a !important; }
+.bg-slate-950 { background-color: #020617 !important; }
+.bg-black\/80 { background-color: rgba(0, 0, 0, 0.8) !important; }
+
+/* Responsive Utility Overrides */
+@media (min-width: 640px) {
+  .sm\:p-6 { padding: 24px !important; }
+  .sm\:gap-6 { gap: 24px !important; }
+  .sm\:pb-4 { padding-bottom: 16px !important; }
+  .sm\:h-32 { height: 128px !important; }
+}
+
+@media (min-width: 768px) {
+  .md\:justify-center { justify-content: center !important; }
+}

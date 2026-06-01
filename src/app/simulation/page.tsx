@@ -92,6 +92,20 @@ export default function SimulationPage() {
         setOwnerPinInput('1234');
         setRiderPinInput('5678');
       }
+
+      // Restore saved camera IDs
+      const savedCameras = localStorage.getItem('drop_camera_ids');
+      if (savedCameras) {
+        try {
+          const parsed = JSON.parse(savedCameras);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setCameraIds(parsed);
+            setActiveCameraId(parsed[parsed.length - 1]);
+          }
+        } catch (e) {
+          console.error('Failed to restore camera IDs:', e);
+        }
+      }
     } catch (e) {
       console.error('Failed to load local storage state:', e);
     }
@@ -509,9 +523,12 @@ export default function SimulationPage() {
 
   const handleAddCamera = () => {
     if (newCameraId && !cameraIds.includes(newCameraId)) {
-      setCameraIds([...cameraIds, newCameraId]);
+      const updated = [...cameraIds, newCameraId];
+      setCameraIds(updated);
       setActiveCameraId(newCameraId);
       setNewCameraId('');
+      // Persist to localStorage
+      localStorage.setItem('drop_camera_ids', JSON.stringify(updated));
     }
   };
 
