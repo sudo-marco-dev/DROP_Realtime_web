@@ -2,34 +2,34 @@
 
 import { useReducer, useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import { 
-  dropReducer, 
-  INITIAL_STATE, 
-  pad16, 
-  getOledTitle, 
+import {
+  dropReducer,
+  INITIAL_STATE,
+  pad16,
+  getOledTitle,
   SystemState,
   DropState
 } from '@/lib/dropboxStateMachine';
-import { 
-  playInputBeep, 
-  playSuccessBeep, 
-  playErrorBeep, 
-  playBootBeep, 
-  startSiren, 
-  stopSiren 
+import {
+  playInputBeep,
+  playSuccessBeep,
+  playErrorBeep,
+  playBootBeep,
+  startSiren,
+  stopSiren
 } from '@/lib/audio';
 import { QRCodeSVG } from 'qrcode.react';
-import { 
-  Tv, 
-  Lock, 
-  Unlock, 
-  Sliders, 
-  Camera, 
-  FileText, 
-  RefreshCw, 
-  Plus, 
-  Smartphone, 
-  Laptop, 
+import {
+  Tv,
+  Lock,
+  Unlock,
+  Sliders,
+  Camera,
+  FileText,
+  RefreshCw,
+  Plus,
+  Smartphone,
+  Laptop,
   ExternalLink,
   Info,
   ShieldAlert,
@@ -39,7 +39,7 @@ import {
 
 export default function SimulationPage() {
   const [state, dispatch] = useReducer(dropReducer, INITIAL_STATE);
-  
+
   // Custom camera management state
   const [cameraIds, setCameraIds] = useState<string[]>(['phone1']);
   const [newCameraId, setNewCameraId] = useState('');
@@ -48,12 +48,12 @@ export default function SimulationPage() {
   const [showQRForCamera, setShowQRForCamera] = useState<string | null>(null);
   const [cameraUrlHost, setCameraUrlHost] = useState('');
   const [lastCapturedImage, setLastCapturedImage] = useState<string | null>(null);
-  
+
   // PIN change states
   const [ownerPinInput, setOwnerPinInput] = useState('');
   const [riderPinInput, setRiderPinInput] = useState('');
   const [showPinSettings, setShowPinSettings] = useState(false);
-  
+
   // Log list
   const [eventsList, setEventsList] = useState<any[]>([]);
   const [isDbConnected, setIsDbConnected] = useState(true);
@@ -70,22 +70,39 @@ export default function SimulationPage() {
   useEffect(() => {
     playBootBeep();
     setCameraUrlHost(window.location.origin);
-    
+
     // Restore state from localStorage if exists
     try {
       const savedState = localStorage.getItem('drop_system_state');
       if (savedState) {
         const parsed = JSON.parse(savedState);
-        dispatch({ type: 'SET_STATE', state: {
-          currentState: parsed.currentState ?? 'STATE_IDLE',
-          primedAmount: parsed.primedAmount ?? 0,
-          ownerPin: parsed.ownerPin ?? '1234',
-          riderPin: parsed.riderPin ?? '5678',
-          isLocked: parsed.isLocked ?? true,
-          lcdLine1: parsed.lcdLine1 ?? 'SYSTEM LOCKED',
-          lcdLine2: parsed.lcdLine2 ?? 'PIN: ',
-          oledFace: parsed.oledFace ?? '(-_-)',
-        }});
+
+        // Auto-resolve cooldown if it has expired
+        let inCooldown = parsed.inCooldown ?? false;
+        let lockoutTimer = parsed.lockoutTimer ?? null;
+        if (inCooldown && lockoutTimer && Date.now() >= lockoutTimer) {
+          inCooldown = false;
+          lockoutTimer = null;
+        }
+
+        dispatch({
+          type: 'SET_STATE', state: {
+            currentState: parsed.currentState ?? 'STATE_IDLE',
+            primedAmount: parsed.primedAmount ?? 0,
+            ownerPin: parsed.ownerPin ?? '1234',
+            riderPin: parsed.riderPin ?? '5678',
+            isLocked: parsed.isLocked ?? true,
+            lcdLine1: inCooldown ? parsed.lcdLine1 : (parsed.lcdLine1 ?? 'SYSTEM LOCKED'),
+            lcdLine2: inCooldown ? parsed.lcdLine2 : (parsed.lcdLine2 ?? 'PIN: '),
+            oledFace: inCooldown ? parsed.oledFace : (parsed.oledFace ?? '(-_-)'),
+            failedAttempts: parsed.failedAttempts ?? 0,
+            inCooldown: inCooldown,
+            lockoutTimer: lockoutTimer,
+            remainingCountdown: inCooldown ? Math.max(0, Math.ceil(((lockoutTimer ?? Date.now()) - Date.now()) / 1000)) : 0,
+            lastTamperAlert: parsed.lastTamperAlert ?? null,
+            lastWrongPinAlert: parsed.lastWrongPinAlert ?? null,
+          }
+        });
         setOwnerPinInput(parsed.ownerPin ?? '1234');
         setRiderPinInput(parsed.riderPin ?? '5678');
       } else {
@@ -118,7 +135,7 @@ export default function SimulationPage() {
           .select('*')
           .order('timestamp', { ascending: false })
           .limit(15);
-        
+
         if (error) throw error;
         if (data) {
           setEventsList(data);
@@ -161,9 +178,25 @@ export default function SimulationPage() {
         lcdLine1: state.lcdLine1,
         lcdLine2: state.lcdLine2,
         oledFace: state.oledFace,
+        failedAttempts: state.failedAttempts,
+        inCooldown: state.inCooldown,
+        lockoutTimer: state.lockoutTimer,
+        lastTamperAlert: state.lastTamperAlert,
+        lastWrongPinAlert: state.lastWrongPinAlert,
       }));
     }
   }, [state]);
+
+  // 2b. TICK_COOLDOWN - 1-second interval for countdown when cooldown active
+  useEffect(() => {
+    if (!state.inCooldown) return;
+
+    const interval = setInterval(() => {
+      dispatch({ type: 'TICK_COOLDOWN' });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [state.inCooldown]);
 
   // 3. Audio & Key Click feedback
   // Simple check on state variables to play sounds
@@ -185,13 +218,13 @@ export default function SimulationPage() {
     // Check for errors shown on LCD
     if (state.lcdLine1 !== prevLcdLine1.current || state.lcdLine2 !== prevLcdLine2.current) {
       const isError = state.lcdLine1.includes('ERROR') || state.lcdLine2.includes('Wrong PIN');
-      const isSuccess = state.lcdLine1.includes('OWNER OK') || 
-                        state.lcdLine1.includes('RIDER OK') || 
-                        state.lcdLine1.includes('Saved') || 
-                        state.lcdLine1.includes('OPEN') || 
-                        state.lcdLine1.includes('LOCKED') ||
-                        state.lcdLine1.includes('READY');
-      
+      const isSuccess = state.lcdLine1.includes('OWNER OK') ||
+        state.lcdLine1.includes('RIDER OK') ||
+        state.lcdLine1.includes('Saved') ||
+        state.lcdLine1.includes('OPEN') ||
+        state.lcdLine1.includes('LOCKED') ||
+        state.lcdLine1.includes('READY');
+
       if (isError) {
         playErrorBeep();
       } else if (isSuccess && !state.isTampering) {
@@ -306,14 +339,14 @@ export default function SimulationPage() {
         const photoTimeout = setTimeout(async () => {
           // Find which cameras didn't respond
           const unresponsive = camerasToTrigger.filter(cam => !respondedCameras.has(cam));
-          
+
           for (const offlineCam of unresponsive) {
             console.warn(`Camera "${offlineCam}" capture timed out`);
             const errorNotes = `${notes} (Camera command timed out - camera offline)`;
-            
+
             // Send Discord notification for this offline camera
             await notifyDiscord(triggerType, null, timestamp, errorNotes, offlineCam);
-            
+
             // Insert fallback offline event in DB
             await supabase.from('events').insert({
               trigger_type: triggerType,
@@ -321,22 +354,22 @@ export default function SimulationPage() {
               correlation_id: correlationId
             });
           }
-          
+
           supabase.removeChannel(photoChannel);
         }, 6000);
 
         // Listen for photo uploads for this correlationId
         const photoChannel = supabase
           .channel(`wait-photo:${correlationId}`)
-          .on('postgres_changes', { 
-            event: 'INSERT', 
-            schema: 'public', 
+          .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
             table: 'events',
             filter: `correlation_id=eq.${correlationId}`
           }, async (payload) => {
             const resolvedEvent = payload.new;
             console.log('Received uploaded photo:', resolvedEvent.image_url, resolvedEvent.notes);
-            
+
             // Extract camera ID from notes
             let detectedCamId = '';
             const match = resolvedEvent.notes?.match(/Remote photo uploaded by ([a-zA-Z0-9_-]+)/i);
@@ -476,6 +509,9 @@ export default function SimulationPage() {
 
   // 8. Keypad and Switch Handlers
   const handleKeyPress = (key: string) => {
+    // Silently ignore keypresses during cooldown (no beep, no dispatch)
+    if (state.inCooldown) return;
+
     if (!audioUnlocked) {
       // Unlocks browser audio policy
       playInputBeep();
@@ -545,9 +581,9 @@ export default function SimulationPage() {
   return (
     <div className="min-h-screen pb-12">
       {state.isTampering && <div className="tamper-strobe" />}
-      
+
       <div className="dashboard-container">
-        
+
         {/* Header section */}
         <header className="header-bar">
           <div className="logo-section">
@@ -563,9 +599,9 @@ export default function SimulationPage() {
               <span className="text-gray-400">Database:</span>
               <span className="font-bold text-white">{isDbConnected ? 'CONNECTED' : 'OFFLINE'}</span>
             </div>
-            
-            <button 
-              onClick={() => setShowPinSettings(!showPinSettings)} 
+
+            <button
+              onClick={() => setShowPinSettings(!showPinSettings)}
               className="btn btn-secondary !py-1.5 !px-3"
             >
               <Settings size={14} />
@@ -582,40 +618,40 @@ export default function SimulationPage() {
                 <Settings size={18} className="text-amber-500" />
                 Configure Box Pins
               </h3>
-              
+
               <div className="flex flex-col gap-4 mt-2">
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-gray-400 font-bold uppercase">Owner PIN (Default: 1234)</label>
-                  <input 
-                    type="text" 
-                    value={ownerPinInput} 
+                  <input
+                    type="text"
+                    value={ownerPinInput}
                     onChange={e => setOwnerPinInput(e.target.value)}
                     className="bg-slate-900 border border-white/10 rounded p-2 text-white font-mono text-lg focus:outline-none focus:border-amber-500"
                     maxLength={8}
                   />
                 </div>
-                
+
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-gray-400 font-bold uppercase">Rider PIN (Default: 5678)</label>
-                  <input 
-                    type="text" 
-                    value={riderPinInput} 
+                  <input
+                    type="text"
+                    value={riderPinInput}
                     onChange={e => setRiderPinInput(e.target.value)}
                     className="bg-slate-900 border border-white/10 rounded p-2 text-white font-mono text-lg focus:outline-none focus:border-amber-500"
                     maxLength={8}
                   />
                 </div>
               </div>
-              
+
               <div className="flex gap-3 justify-end mt-4">
-                <button 
-                  onClick={() => setShowPinSettings(false)} 
+                <button
+                  onClick={() => setShowPinSettings(false)}
                   className="btn btn-secondary"
                 >
                   Cancel
                 </button>
-                <button 
-                  onClick={handleUpdatePins} 
+                <button
+                  onClick={handleUpdatePins}
                   className="btn btn-primary"
                 >
                   Save PINs
@@ -627,17 +663,17 @@ export default function SimulationPage() {
 
         {/* 3-column layout */}
         <div className="twin-grid">
-          
+
           {/* Column 1: Smart Box Hardware Interface */}
           <section className={`glass-card ${state.isTampering ? 'tamper-alarm' : ''}`}>
             <h2 className="card-title text-amber-500">
               <Tv size={18} />
               Virtual DROP Box Hardware
             </h2>
-            
+
             {/* Displays Row */}
             <div className="flex flex-col gap-4">
-              
+
               {/* LCD 16x2 Emulation */}
               <div className="lcd-container">
                 <div className="text-[10px] text-gray-500 mb-1 font-mono uppercase tracking-wider">LiquidCrystal I2C 16x2</div>
@@ -652,9 +688,9 @@ export default function SimulationPage() {
                 <div className="text-[10px] text-gray-500 mb-1 font-mono uppercase tracking-wider">SSD1306 OLED 128x64</div>
                 <div className="oled-screen">
                   <div className="flex justify-between items-center border-b border-white/5 pb-1">
-                    <span className="oled-text-sm">SYSTEM STATE:</span>
-                    <span className="oled-text-sm px-1.5 py-0.5 rounded bg-white/10 font-bold">
-                      {getOledTitle(state.currentState)}
+                    <span className="oled-text-sm">{state.inCooldown ? 'SECURITY:' : 'SYSTEM STATE:'}</span>
+                    <span className={`oled-text-sm px-1.5 py-0.5 rounded bg-white/10 font-bold ${state.inCooldown ? 'text-red-400' : ''}`}>
+                      {state.inCooldown ? 'COOLDOWN' : getOledTitle(state.currentState)}
                     </span>
                   </div>
                   <div className="oled-face">{state.oledFace}</div>
@@ -686,11 +722,11 @@ export default function SimulationPage() {
               <span className="text-xs text-gray-400 font-bold uppercase tracking-wider text-center">Hardware Matrix Keypad</span>
               <div className="keypad-grid">
                 {['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map((key) => (
-                  <button 
-                    key={key} 
+                  <button
+                    key={key}
                     onClick={() => handleKeyPress(key)}
-                    className={`keypad-button ${key === '*' || key === '#' ? 'action-btn' : ''}`}
-                    disabled={state.isTampering}
+                    className={`keypad-button ${key === '*' || key === '#' ? 'action-btn' : ''} ${state.inCooldown ? 'cooldown' : ''}`}
+                    disabled={state.isTampering || state.inCooldown}
                   >
                     {key}
                   </button>
@@ -706,11 +742,11 @@ export default function SimulationPage() {
               <Sliders size={18} />
               Sensors & Overrides
             </h2>
-            
+
             {/* Sensor switches */}
             <div className="flex flex-col gap-4">
               <h3 className="text-xs text-gray-400 font-bold uppercase tracking-wider">GPIO Pin Simulator</h3>
-              
+
               {/* Lid Switch */}
               <div className="switch-control">
                 <div className="switch-label">
@@ -718,10 +754,10 @@ export default function SimulationPage() {
                   <span className="switch-label-desc">Simulates physical drop box lid open/close</span>
                 </div>
                 <label className="toggle-switch">
-                  <input 
-                    type="checkbox" 
-                    checked={state.lidClosed} 
-                    onChange={handleLidToggle} 
+                  <input
+                    type="checkbox"
+                    checked={state.lidClosed}
+                    onChange={handleLidToggle}
                   />
                   <span className="toggle-slider" />
                 </label>
@@ -734,10 +770,10 @@ export default function SimulationPage() {
                   <span className="switch-label-desc">Detects if a package is loaded inside</span>
                 </div>
                 <label className="toggle-switch">
-                  <input 
-                    type="checkbox" 
-                    checked={state.parcelPresent} 
-                    onChange={handleWeightToggle} 
+                  <input
+                    type="checkbox"
+                    checked={state.parcelPresent}
+                    onChange={handleWeightToggle}
                   />
                   <span className="toggle-slider" />
                 </label>
@@ -750,31 +786,47 @@ export default function SimulationPage() {
                   <span className="switch-label-desc">Shaking triggers tamper alarm in &gt;200ms</span>
                 </div>
                 <label className="toggle-switch">
-                  <input 
-                    type="checkbox" 
-                    checked={state.tiltDetected} 
-                    onChange={handleTiltToggle} 
+                  <input
+                    type="checkbox"
+                    checked={state.tiltDetected}
+                    onChange={handleTiltToggle}
                   />
                   <span className="toggle-slider danger-slider" />
                 </label>
               </div>
             </div>
 
+            {/* Cooldown Progress Bar (only visible during cooldown) */}
+            {state.inCooldown && (
+              <div className="flex flex-col gap-2 mt-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-gray-400 font-bold uppercase tracking-wider">SECURITY COOLDOWN</span>
+                  <span className="text-xs font-mono text-red-400">{state.remainingCountdown}s</span>
+                </div>
+                <div className="cooldown-bar-bg">
+                  <div
+                    className="cooldown-bar-fill"
+                    style={{ width: `${(state.remainingCountdown / 30) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Remote Commands Section */}
             <div className="flex flex-col gap-3 mt-4 border-t border-white/5 pt-4">
               <h3 className="text-xs text-gray-400 font-bold uppercase tracking-wider">Remote Owner Actions</h3>
-              
+
               <div className="grid grid-cols-2 gap-3">
-                <button 
-                  onClick={handleRemoteUnlock} 
+                <button
+                  onClick={handleRemoteUnlock}
                   className="btn btn-secondary flex-1"
                   disabled={state.isTampering}
                 >
                   <Unlock size={14} className="text-emerald-500" />
                   Remote Unlock
                 </button>
-                <button 
-                  onClick={handleRemoteLock} 
+                <button
+                  onClick={handleRemoteLock}
                   className="btn btn-secondary flex-1"
                   disabled={state.isTampering}
                 >
@@ -783,8 +835,8 @@ export default function SimulationPage() {
                 </button>
               </div>
 
-              <button 
-                onClick={handleManualTestNotification} 
+              <button
+                onClick={handleManualTestNotification}
                 className="btn btn-primary w-full mt-2"
                 disabled={state.isTampering}
               >
@@ -817,10 +869,10 @@ export default function SimulationPage() {
                 <span className="switch-label-desc">Use this machine's camera as the CCTV</span>
               </div>
               <label className="toggle-switch">
-                <input 
-                  type="checkbox" 
-                  checked={webcamFallback} 
-                  onChange={e => setWebcamFallback(e.target.checked)} 
+                <input
+                  type="checkbox"
+                  checked={webcamFallback}
+                  onChange={e => setWebcamFallback(e.target.checked)}
                 />
                 <span className="toggle-slider" />
               </label>
@@ -829,11 +881,11 @@ export default function SimulationPage() {
             {/* Webcam Video Viewfinder */}
             {webcamFallback && (
               <div className="camera-preview-container flex items-center justify-center">
-                <video 
-                  ref={videoRef} 
-                  autoPlay 
-                  playsInline 
-                  muted 
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
                   className="w-full h-full object-cover scale-x-[-1]"
                 />
                 <div className="absolute top-2 left-2 bg-emerald-500 text-black font-extrabold text-[9px] px-2 py-0.5 rounded tracking-wide animate-pulse uppercase">
@@ -851,32 +903,30 @@ export default function SimulationPage() {
 
                 <div className="flex flex-col gap-2">
                   {cameraIds.map(camId => (
-                    <div 
-                      key={camId} 
-                      className={`flex justify-between items-center p-2 rounded-lg text-sm border ${
-                        activeCameraId === camId 
-                          ? 'border-purple-500/50 bg-purple-500/5' 
-                          : 'border-white/5 bg-white/2'
-                      }`}
+                    <div
+                      key={camId}
+                      className={`flex justify-between items-center p-2 rounded-lg text-sm border ${activeCameraId === camId
+                        ? 'border-purple-500/50 bg-purple-500/5'
+                        : 'border-white/5 bg-white/2'
+                        }`}
                     >
                       <div className="flex items-center gap-2">
                         <Smartphone size={14} className={activeCameraId === camId ? 'text-purple-400' : 'text-gray-400'} />
                         <span className="font-bold text-gray-200">{camId}</span>
                       </div>
-                      
+
                       <div className="flex items-center gap-2">
-                        <button 
+                        <button
                           onClick={() => setActiveCameraId(camId)}
-                          className={`text-xs px-2 py-1 rounded font-semibold ${
-                            activeCameraId === camId
-                              ? 'bg-purple-600 text-white'
-                              : 'bg-slate-800 text-gray-400 hover:text-white'
-                          }`}
+                          className={`text-xs px-2 py-1 rounded font-semibold ${activeCameraId === camId
+                            ? 'bg-purple-600 text-white'
+                            : 'bg-slate-800 text-gray-400 hover:text-white'
+                            }`}
                         >
                           Select
                         </button>
-                        
-                        <button 
+
+                        <button
                           onClick={() => setShowQRForCamera(showQRForCamera === camId ? null : camId)}
                           className="bg-slate-800 hover:bg-slate-700 text-gray-300 p-1 rounded"
                           title="Generate QR / Link"
@@ -890,15 +940,15 @@ export default function SimulationPage() {
 
                 {/* Add new camera ID */}
                 <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    value={newCameraId} 
+                  <input
+                    type="text"
+                    value={newCameraId}
                     onChange={e => setNewCameraId(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, ''))}
                     placeholder="e.g. phone2"
                     className="bg-slate-900 border border-white/10 rounded p-1.5 text-xs text-white grow"
                   />
-                  <button 
-                    onClick={handleAddCamera} 
+                  <button
+                    onClick={handleAddCamera}
                     className="btn btn-secondary !p-1.5"
                   >
                     <Plus size={14} />
@@ -910,15 +960,15 @@ export default function SimulationPage() {
                   <div className="qr-container">
                     <span className="text-xs text-gray-300 font-bold uppercase">Scan to connect {showQRForCamera}</span>
                     <div className="qr-placeholder">
-                      <QRCodeSVG 
-                        value={`${cameraUrlHost}/camera?camera_id=${showQRForCamera}`} 
-                        size={120} 
+                      <QRCodeSVG
+                        value={`${cameraUrlHost}/camera?camera_id=${showQRForCamera}`}
+                        size={120}
                         level="M"
                       />
                     </div>
-                    <a 
-                      href={`/camera?camera_id=${showQRForCamera}`} 
-                      target="_blank" 
+                    <a
+                      href={`/camera?camera_id=${showQRForCamera}`}
+                      target="_blank"
                       rel="noreferrer"
                       className="text-xs text-purple-400 hover:underline inline-flex items-center gap-1"
                     >
@@ -933,14 +983,14 @@ export default function SimulationPage() {
             {/* Last Captured Image Preview */}
             <div className="flex flex-col gap-2 border-t border-white/5 pt-4">
               <span className="text-xs text-gray-400 font-bold uppercase tracking-wider">CCTV Capture Frame</span>
-              
+
               <div className="camera-preview-container">
                 {lastCapturedImage ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img 
-                    src={lastCapturedImage} 
-                    alt="Last CCTV Capture" 
-                    className="camera-preview-img" 
+                  <img
+                    src={lastCapturedImage}
+                    alt="Last CCTV Capture"
+                    className="camera-preview-img"
                   />
                 ) : (
                   <div className="w-full h-full flex flex-col justify-center items-center gap-2 text-gray-500 text-xs">
@@ -961,7 +1011,7 @@ export default function SimulationPage() {
             <FileText size={18} />
             System Event Log & Audit Trail
           </h2>
-          
+
           <div className="event-log-container">
             {eventsList.length === 0 ? (
               <div className="text-center text-xs text-gray-500 py-6">No event logs registered yet. Trigger actions to log data.</div>
@@ -975,7 +1025,7 @@ export default function SimulationPage() {
                 } else if (evt.trigger_type.includes('ARMED') || evt.trigger_type.includes('MANUAL')) {
                   severity = 'severity-accent';
                 }
-                
+
                 return (
                   <div key={evt.id} className={`event-log-item ${severity}`}>
                     <div className="event-log-meta">
@@ -984,9 +1034,9 @@ export default function SimulationPage() {
                     </div>
                     <p className="text-gray-300 font-light mt-0.5">{evt.notes}</p>
                     {evt.image_url && (
-                      <a 
-                        href={evt.image_url} 
-                        target="_blank" 
+                      <a
+                        href={evt.image_url}
+                        target="_blank"
                         rel="noreferrer"
                         className="text-[10px] text-purple-400 hover:underline mt-1 inline-flex items-center gap-1 w-fit"
                       >
@@ -1002,7 +1052,7 @@ export default function SimulationPage() {
         </section>
 
       </div>
-      
+
       {/* Hidden canvas for webcam capture */}
       <canvas ref={canvasRef} className="hidden" />
     </div>

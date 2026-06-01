@@ -23,5 +23,19 @@
     "eslint": "^8",
     "eslint-config-next": "14.2.35",
     "typescript": "^5"
-  }
+  },
+  "description": "**Digital Receptacle Online Parcel (D.R.O.P.)** is a smart drop-box system. This project is a **high-fidelity digital twin dashboard** built with Next.js 14. It emulates the ESP32 hardware state machine and provides a remote CCTV client for real mobile phones, integrated via Supabase Realtime and Discord Webhooks.",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sudo-marco-dev/DROP_Realtime_web.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/sudo-marco-dev/DROP_Realtime_web/issues"
+  },
+  "homepage": "https://github.com/sudo-marco-dev/DROP_Realtime_web#readme"
 }
