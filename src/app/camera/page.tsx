@@ -218,15 +218,15 @@ function CameraClient() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
+    <main className="min-h-screen bg-slate-950 flex flex-col items-center justify-start md:justify-center p-2 sm:p-4 overflow-y-auto">
       {flashActive && (
         <div className="fixed inset-0 bg-white z-50 animate-ping pointer-events-none" />
       )}
 
-      <div className="glass-card max-w-md w-full p-6 flex flex-col gap-6 relative overflow-hidden border border-white/5 shadow-2xl">
+      <div className="glass-card max-w-md w-full p-4 sm:p-6 flex flex-col gap-4 sm:gap-6 relative overflow-hidden border border-white/5 shadow-2xl">
         
         {/* Header */}
-        <div className="flex justify-between items-center pb-4 border-b border-white/5">
+        <div className="flex justify-between items-center pb-3 sm:pb-4 border-b border-white/5">
           <div className="flex items-center gap-2">
             <Smartphone className="text-purple-400" size={20} />
             <div>
@@ -234,7 +234,7 @@ function CameraClient() {
               <span className="text-[10px] text-gray-500 font-mono">NODE ID: {cameraId}</span>
             </div>
           </div>
-          <div className="flex flex-col items-end gap-2">
+          <div className="flex flex-col items-end gap-1.5 sm:gap-2">
             <div className="flex items-center gap-2 bg-slate-900 border border-white/5 px-2.5 py-1 rounded text-[10px]">
               <span className={`status-dot ${dbConnected ? 'active' : 'inactive'}`} />
               <span className="text-gray-400 font-mono">{dbConnected ? 'CONNECTED' : 'DISCONNECTED'}</span>
@@ -284,7 +284,7 @@ function CameraClient() {
             <img 
               src={lastCapturedImage} 
               alt="Last Captured frame" 
-              className="w-full h-32 object-cover rounded border border-white/5"
+              className="w-full h-24 sm:h-32 object-cover rounded border border-white/5"
             />
           </div>
         )}
@@ -292,7 +292,7 @@ function CameraClient() {
         {/* Logs Console Feed */}
         <div className="flex flex-col gap-2">
           <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">CCTV Device Console Logs</span>
-          <div className="bg-black/80 border border-white/5 font-mono text-[10px] text-purple-300 p-3 rounded-lg h-32 overflow-y-auto flex flex-col gap-1">
+          <div className="bg-black/80 border border-white/5 font-mono text-[10px] text-purple-300 p-3 rounded-lg h-24 sm:h-32 overflow-y-auto flex flex-col gap-1">
             {logs.length === 0 ? (
               <span className="text-gray-600">Awaiting commands...</span>
             ) : (

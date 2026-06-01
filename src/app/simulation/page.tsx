@@ -266,44 +266,39 @@ export default function SimulationPage() {
     if (webcamFallback) {
       await captureLocalWebcam(correlationId, triggerType, notes);
     } else {
-      // Trigger remote phone camera via camera_commands
+      // Trigger remote phone camera via camera_commands for ALL connected cameras
       try {
-        const { error: cmdError } = await supabase
-          .from('camera_commands')
-          .insert({
-            camera_id: activeCameraId,
-            command: 'capture',
-            status: 'pending',
-            correlation_id: correlationId,
-            trigger_type: triggerType,
-            notes: notes
-          });
-
-        if (cmdError) throw cmdError;
-
-        console.log(`Dispatched command to camera "${activeCameraId}"`);
+        const camerasToTrigger = [...cameraIds];
+        if (camerasToTrigger.length === 0) {
+          // No cameras linked, just notify Discord without image
+          await notifyDiscord(triggerType, null, timestamp, `${notes} (No cameras linked)`);
+          return;
+        }
 
         // Insert pending event logs locally
         const pendingEvent = {
           id: correlationId,
           trigger_type: triggerType,
           timestamp: new Date(timestamp).toISOString(),
-          notes: `${notes} (Command sent to ${activeCameraId}, waiting for photo...)`,
+          notes: `${notes} (Waiting for photos from: ${camerasToTrigger.join(', ')}...)`,
           image_url: null
         };
         setEventsList(prev => [pendingEvent, ...prev]);
 
-        // Subscribe to events table waiting for the uploaded photo with the correlation_id
-        let isResolved = false;
+        // Keep track of which cameras have responded
+        const respondedCameras = new Set<string>();
+
+        // Set up timeout for offline cameras
         const photoTimeout = setTimeout(async () => {
-          if (!isResolved) {
-            isResolved = true;
-            supabase.removeChannel(photoChannel);
-            console.warn('Camera capture timed out after 6 seconds');
-            
-            // Log offline details in local display and trigger notification without image
+          // Find which cameras didn't respond
+          const unresponsive = camerasToTrigger.filter(cam => !respondedCameras.has(cam));
+          
+          for (const offlineCam of unresponsive) {
+            console.warn(`Camera "${offlineCam}" capture timed out`);
             const errorNotes = `${notes} (Camera command timed out - camera offline)`;
-            await notifyDiscord(triggerType, null, timestamp, errorNotes);
+            
+            // Send Discord notification for this offline camera
+            await notifyDiscord(triggerType, null, timestamp, errorNotes, offlineCam);
             
             // Insert fallback offline event in DB
             await supabase.from('events').insert({
@@ -312,8 +307,11 @@ export default function SimulationPage() {
               correlation_id: correlationId
             });
           }
+          
+          supabase.removeChannel(photoChannel);
         }, 6000);
 
+        // Listen for photo uploads for this correlationId
         const photoChannel = supabase
           .channel(`wait-photo:${correlationId}`)
           .on('postgres_changes', { 
@@ -322,25 +320,52 @@ export default function SimulationPage() {
             table: 'events',
             filter: `correlation_id=eq.${correlationId}`
           }, async (payload) => {
-            if (!isResolved) {
-              isResolved = true;
+            const resolvedEvent = payload.new;
+            console.log('Received uploaded photo:', resolvedEvent.image_url, resolvedEvent.notes);
+            
+            // Extract camera ID from notes
+            let detectedCamId = '';
+            const match = resolvedEvent.notes?.match(/Remote photo uploaded by ([a-zA-Z0-9_-]+)/i);
+            if (match && match[1]) {
+              detectedCamId = match[1];
+              respondedCameras.add(detectedCamId);
+            }
+
+            setLastCapturedImage(resolvedEvent.image_url);
+
+            // Notify Discord with image URL and camera label
+            await notifyDiscord(triggerType, resolvedEvent.image_url, timestamp, notes, detectedCamId || activeCameraId);
+
+            // If all cameras have responded, we can clear the timeout early
+            if (respondedCameras.size === camerasToTrigger.length) {
               clearTimeout(photoTimeout);
               supabase.removeChannel(photoChannel);
-              
-              const resolvedEvent = payload.new;
-              console.log('Received uploaded photo:', resolvedEvent.image_url);
-              setLastCapturedImage(resolvedEvent.image_url);
-
-              // Notify Discord with image URL
-              await notifyDiscord(triggerType, resolvedEvent.image_url, timestamp, notes);
             }
           })
           .subscribe();
 
+        // Dispatch commands to all cameras in bulk
+        const commands = camerasToTrigger.map(camId => ({
+          camera_id: camId,
+          command: 'capture',
+          status: 'pending',
+          correlation_id: correlationId,
+          trigger_type: triggerType,
+          notes: notes
+        }));
+
+        const { error: cmdError } = await supabase
+          .from('camera_commands')
+          .insert(commands);
+
+        if (cmdError) throw cmdError;
+
+        console.log(`Dispatched commands to cameras: ${camerasToTrigger.join(', ')}`);
+
       } catch (e) {
-        console.error('Failed to trigger remote camera:', e);
+        console.error('Failed to trigger remote cameras:', e);
         // Fallback to notify Discord immediately without picture
-        await notifyDiscord(triggerType, null, timestamp, `${notes} (Error dispatching camera command: ${e})`);
+        await notifyDiscord(triggerType, null, timestamp, `${notes} (Error dispatching camera commands: ${e})`);
       }
     }
   };
@@ -398,7 +423,7 @@ export default function SimulationPage() {
         if (eventError) throw eventError;
 
         // Send Discord Webhook
-        await notifyDiscord(triggerType, imageUrl, Date.now(), fullNotes);
+        await notifyDiscord(triggerType, imageUrl, Date.now(), fullNotes, 'Laptop Webcam');
 
       }, 'image/jpeg', 0.85);
 
@@ -409,7 +434,7 @@ export default function SimulationPage() {
   };
 
   // Helper to call local Next.js secure API route to deliver Discord notification
-  const notifyDiscord = async (triggerType: string, imageUrl: string | null, timestamp: number, notes: string) => {
+  const notifyDiscord = async (triggerType: string, imageUrl: string | null, timestamp: number, notes: string, cameraId?: string) => {
     try {
       const response = await fetch('/api/notify', {
         method: 'POST',
@@ -420,7 +445,8 @@ export default function SimulationPage() {
           trigger_type: triggerType,
           image_url: imageUrl,
           timestamp: timestamp,
-          notes: notes
+          notes: notes,
+          camera_id: cameraId
         }),
       });
 

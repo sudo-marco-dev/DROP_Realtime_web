@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { trigger_type, image_url, timestamp, notes } = body;
+    const { trigger_type, image_url, timestamp, notes, camera_id } = body;
 
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) {
@@ -63,6 +63,16 @@ export async function POST(req: Request) {
         text: 'D.R.O.P. Digital Twin System',
       },
     };
+
+    if (camera_id) {
+      embed.fields = [
+        {
+          name: '🎥 Camera Source',
+          value: `\`${camera_id}\``,
+          inline: true,
+        }
+      ];
+    }
 
     if (image_url) {
       embed.image = {
