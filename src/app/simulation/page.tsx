@@ -798,26 +798,28 @@ export default function SimulationPage() {
                 Configure Box Pins
               </h3>
 
-              <div className="flex flex-col gap-4 mt-2">
+              <div className="grid grid-cols-2 gap-4 mt-2">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-bold uppercase">Owner PIN (Default: 1234)</label>
+                  <label className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Owner PIN</label>
                   <input
                     type="text"
                     value={ownerPinInput}
                     onChange={e => setOwnerPinInput(e.target.value)}
-                    className="bg-slate-900 border border-white/10 rounded p-2 text-white font-mono text-lg focus:outline-none focus:border-amber-500"
+                    className="bg-slate-900 border border-white/10 rounded p-2 text-center text-white font-mono text-lg focus:outline-none focus:border-amber-500"
                     maxLength={8}
+                    placeholder="1234"
                   />
                 </div>
 
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-gray-400 font-bold uppercase">Rider PIN (Default: 5678)</label>
+                  <label className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Rider PIN</label>
                   <input
                     type="text"
                     value={riderPinInput}
                     onChange={e => setRiderPinInput(e.target.value)}
-                    className="bg-slate-900 border border-white/10 rounded p-2 text-white font-mono text-lg focus:outline-none focus:border-amber-500"
+                    className="bg-slate-900 border border-white/10 rounded p-2 text-center text-white font-mono text-lg focus:outline-none focus:border-amber-500"
                     maxLength={8}
+                    placeholder="5678"
                   />
                 </div>
               </div>
@@ -1017,17 +1019,17 @@ export default function SimulationPage() {
               <div className="flex flex-col gap-3">
                 {/* Mode Toggle */}
                 <div className="flex items-center gap-2 bg-slate-900/60 border border-white/5 rounded-lg p-2">
-                  <span className="text-xs text-gray-400 font-bold uppercase tracking-wider mr-1">Mode:</span>
+                  <span className="text-xs text-gray-400 font-bold uppercase tracking-wider mr-1 shrink-0">Mode:</span>
                   <button
                     onClick={() => handleModeChange('single')}
-                    className={`text-xs px-3 py-1.5 rounded font-semibold transition-all ${cameraMode === 'single' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-gray-400 hover:text-white'}`}
+                    className={`text-xs px-3 py-1.5 rounded font-semibold transition-all flex-1 text-center ${cameraMode === 'single' ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/20' : 'bg-slate-800 text-gray-400 hover:text-white'}`}
                   >
                     <Radio size={12} className="inline mr-1" />
                     Single
                   </button>
                   <button
                     onClick={() => handleModeChange('multi')}
-                    className={`text-xs px-3 py-1.5 rounded font-semibold transition-all ${cameraMode === 'multi' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-gray-400 hover:text-white'}`}
+                    className={`text-xs px-3 py-1.5 rounded font-semibold transition-all flex-1 text-center ${cameraMode === 'multi' ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/20' : 'bg-slate-800 text-gray-400 hover:text-white'}`}
                   >
                     <Camera size={12} className="inline mr-1" />
                     Multi-Angle
@@ -1076,13 +1078,13 @@ export default function SimulationPage() {
                       </div>
                       <div className="flex items-center gap-1 mt-1">
                         {/* Active toggle */}
-                        <label className="toggle-switch" style={{ width: 30, height: 16 }}>
+                        <label className="toggle-switch-sm">
                           <input
                             type="checkbox"
                             checked={cam.active}
                             onChange={() => handleToggleCameraActive(cam.id)}
                           />
-                          <span className="toggle-slider" style={{ height: 16 }} />
+                          <span className="toggle-slider-sm" />
                         </label>
                         <span className="text-[9px] text-gray-500 mr-2">{cam.active ? 'ON' : 'OFF'}</span>
 
@@ -1165,9 +1167,13 @@ export default function SimulationPage() {
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={lastCapturedImage} alt="Last CCTV Capture" className="camera-preview-img" />
                 ) : (
-                  <div className="w-full h-full flex flex-col justify-center items-center gap-2 text-gray-500 text-xs">
-                    <Camera size={24} />
-                    <span>No snapshots captured yet</span>
+                  <div className="w-full h-full flex flex-col justify-center items-center gap-2 text-gray-500 text-xs p-4 text-center">
+                    <Camera size={24} className="text-gray-600" />
+                    {(!webcamFallback && cameras.filter(c => c.active).length === 0) ? (
+                      <span className="text-[11px] leading-relaxed">No cameras active. Add a camera below & pair via QR code, or enable Laptop Webcam Fallback.</span>
+                    ) : (
+                      <span>No snapshots captured yet</span>
+                    )}
                   </div>
                 )}
               </div>
