@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { trigger_type, image_url, timestamp, notes, camera_id } = body;
+    const { trigger_type, image_url, timestamp, notes, camera_id, embeds } = body;
 
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) {
@@ -53,35 +53,63 @@ export async function POST(req: Request) {
       ? trigger_type.replace(/_/g, ' ')
       : 'UNKNOWN TRIGGER';
 
-    // Construct Discord Embed Payload
-    const embed: any = {
-      title: `${titleEmoji} D.R.O.P. Event: ${formattedTitle}`,
-      description: notes || 'No additional details provided.',
-      color: color,
-      timestamp: new Date(timestamp || Date.now()).toISOString(),
-      footer: {
-        text: 'D.R.O.P. Digital Twin System',
-      },
-    };
+    // Build the embed array — either multi-camera embeds or single legacy embed
+    let discordEmbeds: any[] = [];
 
-    if (camera_id) {
-      embed.fields = [
-        {
-          name: '🎥 Camera Source',
-          value: `\`${camera_id}\``,
-          inline: true,
-        }
-      ];
-    }
+    if (embeds && Array.isArray(embeds) && embeds.length > 0) {
+      // Multi-camera mode: one embed per camera (max 10 to avoid Discord limits)
+      const cameraEmbeds = embeds.slice(0, 10).map((cam: any) => ({
+        title: `${titleEmoji} D.R.O.P. Event: ${formattedTitle}`,
+        description: notes || 'No additional details provided.',
+        color: color,
+        timestamp: new Date(timestamp || Date.now()).toISOString(),
+        footer: {
+          text: 'D.R.O.P. Digital Twin System',
+        },
+        fields: cam.label ? [
+          {
+            name: '📷 Camera',
+            value: cam.label,
+            inline: true,
+          }
+        ] : [],
+        image: cam.image_url ? { url: cam.image_url } : undefined,
+      }));
 
-    if (image_url) {
-      embed.image = {
-        url: image_url,
+      discordEmbeds = cameraEmbeds;
+    } else {
+      // Legacy single-camera mode
+      const embed: any = {
+        title: `${titleEmoji} D.R.O.P. Event: ${formattedTitle}`,
+        description: notes || 'No additional details provided.',
+        color: color,
+        timestamp: new Date(timestamp || Date.now()).toISOString(),
+        footer: {
+          text: 'D.R.O.P. Digital Twin System',
+        },
       };
+
+      if (camera_id) {
+        embed.fields = [
+          {
+            name: '🎥 Camera Source',
+            value: `\`${camera_id}\``,
+            inline: true,
+          }
+        ];
+      }
+
+      if (image_url) {
+        embed.image = {
+          url: image_url,
+        };
+      }
+
+      discordEmbeds = [embed];
     }
 
     const discordPayload = {
-      embeds: [embed],
+      embeds: discordEmbeds,
     };
 
     const response = await fetch(webhookUrl, {

@@ -34,16 +34,26 @@ import {
   Info,
   ShieldAlert,
   Settings,
-  BellRing
+  BellRing,
+  Trash2,
+  Radio
 } from 'lucide-react';
+
+interface Camera {
+  id: string;
+  active: boolean;
+  lastSeen: number | null;   // timestamp (ms)
+  label: string;             // user-friendly name
+}
 
 export default function SimulationPage() {
   const [state, dispatch] = useReducer(dropReducer, INITIAL_STATE);
 
-  // Custom camera management state
-  const [cameraIds, setCameraIds] = useState<string[]>(['phone1']);
+  // Camera management state
+  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [cameraMode, setCameraMode] = useState<'single' | 'multi'>('single');
+  const [primaryCameraId, setPrimaryCameraId] = useState<string | null>(null);
   const [newCameraId, setNewCameraId] = useState('');
-  const [activeCameraId, setActiveCameraId] = useState('phone1');
   const [webcamFallback, setWebcamFallback] = useState(false);
   const [showQRForCamera, setShowQRForCamera] = useState<string | null>(null);
   const [cameraUrlHost, setCameraUrlHost] = useState('');
@@ -65,6 +75,14 @@ export default function SimulationPage() {
 
   // Audio Context lock
   const [audioUnlocked, setAudioUnlocked] = useState(false);
+
+  // Helper: persist camera settings to localStorage
+  const persistCameras = (cams: Camera[], mode: string, primary: string | null) => {
+    localStorage.setItem('dropCameras', JSON.stringify(cams));
+    localStorage.setItem('dropCameraMode', mode);
+    if (primary) localStorage.setItem('dropPrimaryCamera', primary);
+    else localStorage.removeItem('dropPrimaryCamera');
+  };
 
   // 1. Initial Load: Restore settings, play boot beep, and pull event logs
   useEffect(() => {
@@ -110,17 +128,48 @@ export default function SimulationPage() {
         setRiderPinInput('5678');
       }
 
-      // Restore saved camera IDs
-      const savedCameras = localStorage.getItem('drop_camera_ids');
+      // Restore camera settings from new localStorage keys
+      const savedCameras = localStorage.getItem('dropCameras');
+      const savedMode = localStorage.getItem('dropCameraMode');
+      const savedPrimary = localStorage.getItem('dropPrimaryCamera');
+
       if (savedCameras) {
         try {
-          const parsed = JSON.parse(savedCameras);
+          const parsed: Camera[] = JSON.parse(savedCameras);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            setCameraIds(parsed);
-            setActiveCameraId(parsed[parsed.length - 1]);
+            setCameras(parsed);
+            if (savedMode === 'single' || savedMode === 'multi') {
+              setCameraMode(savedMode);
+            }
+            if (savedPrimary && parsed.find(c => c.id === savedPrimary)) {
+              setPrimaryCameraId(savedPrimary);
+            } else {
+              // Default to first active camera
+              const firstActive = parsed.find(c => c.active);
+              if (firstActive) setPrimaryCameraId(firstActive.id);
+            }
           }
         } catch (e) {
-          console.error('Failed to restore camera IDs:', e);
+          console.error('Failed to restore cameras:', e);
+        }
+      } else {
+        // Fallback: migrate from old drop_camera_ids
+        const oldCameras = localStorage.getItem('drop_camera_ids');
+        if (oldCameras) {
+          try {
+            const parsed = JSON.parse(oldCameras);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              const migrated: Camera[] = parsed.map((id: string) => ({
+                id,
+                active: true,
+                lastSeen: null,
+                label: `Camera ${id}`,
+              }));
+              setCameras(migrated);
+              setPrimaryCameraId(migrated[0].id);
+              persistCameras(migrated, 'single', migrated[0].id);
+            }
+          } catch (e) { /* ignore */ }
         }
       }
     } catch (e) {
@@ -199,13 +248,11 @@ export default function SimulationPage() {
   }, [state.inCooldown]);
 
   // 3. Audio & Key Click feedback
-  // Simple check on state variables to play sounds
   const prevLcdLine1 = useRef(state.lcdLine1);
   const prevLcdLine2 = useRef(state.lcdLine2);
   const prevIsTampering = useRef(state.isTampering);
 
   useEffect(() => {
-    // Check for Tamper Alarm Siren
     if (state.isTampering !== prevIsTampering.current) {
       if (state.isTampering) {
         startSiren();
@@ -215,7 +262,6 @@ export default function SimulationPage() {
       prevIsTampering.current = state.isTampering;
     }
 
-    // Check for errors shown on LCD
     if (state.lcdLine1 !== prevLcdLine1.current || state.lcdLine2 !== prevLcdLine2.current) {
       const isError = state.lcdLine1.includes('ERROR') || state.lcdLine2.includes('Wrong PIN');
       const isSuccess = state.lcdLine1.includes('OWNER OK') ||
@@ -292,10 +338,8 @@ export default function SimulationPage() {
   useEffect(() => {
     if (state.lastTriggerEvent) {
       const trigger = { ...state.lastTriggerEvent };
-      // Immediately reset so we only process this event once
       dispatch({ type: 'RESET_TRIGGER_EVENT' });
 
-      // Run async capture and notification flow
       if (trigger.type) {
         handleCaptureAndNotify(trigger.type, trigger.notes || '');
       }
@@ -309,115 +353,156 @@ export default function SimulationPage() {
 
     console.log(`[TRIGGER: ${triggerType}] Correlation: ${correlationId}`);
 
-    // If local fallback is active
     if (webcamFallback) {
       await captureLocalWebcam(correlationId, triggerType, notes);
+      return;
+    }
+
+    // Determine which cameras to command
+    const activeCameras = cameras.filter(c => c.active);
+    let targetCameraIds: string[] = [];
+
+    if (cameraMode === 'single') {
+      const primary = activeCameras.find(c => c.id === primaryCameraId);
+      if (primary) {
+        targetCameraIds = [primary.id];
+      } else {
+        // No primary camera active
+        await notifyDiscordSingle(triggerType, null, timestamp, `${notes} (No primary camera active)`, null);
+        return;
+      }
     } else {
-      // Trigger remote phone camera via camera_commands for ALL connected cameras
-      try {
-        const camerasToTrigger = [...cameraIds];
-        if (camerasToTrigger.length === 0) {
-          // No cameras linked, just notify Discord without image
-          await notifyDiscord(triggerType, null, timestamp, `${notes} (No cameras linked)`);
-          return;
+      // Multi-angle mode: all active cameras
+      targetCameraIds = activeCameras.map(c => c.id);
+    }
+
+    if (targetCameraIds.length === 0) {
+      await notifyDiscordSingle(triggerType, null, timestamp, `${notes} (No cameras linked)`, null);
+      return;
+    }
+
+    try {
+      // Insert pending event
+      const pendingEvent = {
+        id: correlationId,
+        trigger_type: triggerType,
+        timestamp: new Date(timestamp).toISOString(),
+        notes: `${notes} (Waiting for photos...)`,
+        image_url: null
+      };
+      setEventsList(prev => [pendingEvent, ...prev]);
+
+      // Collect responded images: { camId, imageUrl, label }
+      const respondedImages: { camId: string; imageUrl: string; label: string }[] = [];
+      const respondedCameras = new Set<string>();
+      let photoResolved = false;
+
+      // Set up timeout
+      const photoTimeout = setTimeout(async () => {
+        if (photoResolved) return;
+        photoResolved = true;
+        supabase.removeChannel(photoChannel);
+
+        if (respondedImages.length > 0) {
+          // Send single aggregated Discord notification
+          if (cameraMode === 'multi') {
+            await notifyDiscordMulti(triggerType, timestamp, notes, respondedImages);
+          } else {
+            // Single cam: just send first image
+            const img = respondedImages[0];
+            await notifyDiscordSingle(triggerType, img.imageUrl, timestamp, notes, img.label);
+            setLastCapturedImage(img.imageUrl);
+          }
+        } else {
+          // No cameras responded
+          const offlineMsg = cameraMode === 'single'
+            ? `${notes} (Primary camera offline)`
+            : `${notes} (All cameras offline)`;
+          await notifyDiscordSingle(triggerType, null, timestamp, offlineMsg, null);
         }
+      }, 6000);
 
-        // Insert pending event logs locally
-        const pendingEvent = {
-          id: correlationId,
-          trigger_type: triggerType,
-          timestamp: new Date(timestamp).toISOString(),
-          notes: `${notes} (Waiting for photos from: ${camerasToTrigger.join(', ')}...)`,
-          image_url: null
-        };
-        setEventsList(prev => [pendingEvent, ...prev]);
+      // Listen for photo uploads
+      const photoChannel = supabase
+        .channel(`wait-photo:${correlationId}`)
+        .on('postgres_changes', {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'events',
+          filter: `correlation_id=eq.${correlationId}`
+        }, async (payload) => {
+          if (photoResolved) return;
+          const resolvedEvent = payload.new;
 
-        // Keep track of which cameras have responded
-        const respondedCameras = new Set<string>();
-
-        // Set up timeout for offline cameras
-        const photoTimeout = setTimeout(async () => {
-          // Find which cameras didn't respond
-          const unresponsive = camerasToTrigger.filter(cam => !respondedCameras.has(cam));
-
-          for (const offlineCam of unresponsive) {
-            console.warn(`Camera "${offlineCam}" capture timed out`);
-            const errorNotes = `${notes} (Camera command timed out - camera offline)`;
-
-            // Send Discord notification for this offline camera
-            await notifyDiscord(triggerType, null, timestamp, errorNotes, offlineCam);
-
-            // Insert fallback offline event in DB
-            await supabase.from('events').insert({
-              trigger_type: triggerType,
-              notes: errorNotes,
-              correlation_id: correlationId
-            });
+          // Extract camera ID from notes
+          let detectedCamId = '';
+          const match = resolvedEvent.notes?.match(/Remote photo uploaded by ([a-zA-Z0-9_-]+)/i);
+          if (match && match[1]) {
+            detectedCamId = match[1];
           }
 
-          supabase.removeChannel(photoChannel);
-        }, 6000);
+          if (!detectedCamId) return;
 
-        // Listen for photo uploads for this correlationId
-        const photoChannel = supabase
-          .channel(`wait-photo:${correlationId}`)
-          .on('postgres_changes', {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'events',
-            filter: `correlation_id=eq.${correlationId}`
-          }, async (payload) => {
-            const resolvedEvent = payload.new;
-            console.log('Received uploaded photo:', resolvedEvent.image_url, resolvedEvent.notes);
+          respondedCameras.add(detectedCamId);
+          const camObj = cameras.find(c => c.id === detectedCamId);
+          const camLabel = camObj?.label || detectedCamId;
 
-            // Extract camera ID from notes
-            let detectedCamId = '';
-            const match = resolvedEvent.notes?.match(/Remote photo uploaded by ([a-zA-Z0-9_-]+)/i);
-            if (match && match[1]) {
-              detectedCamId = match[1];
-              respondedCameras.add(detectedCamId);
-            }
+          respondedImages.push({
+            camId: detectedCamId,
+            imageUrl: resolvedEvent.image_url,
+            label: camLabel,
+          });
 
-            setLastCapturedImage(resolvedEvent.image_url);
+          setLastCapturedImage(resolvedEvent.image_url);
 
-            // Notify Discord with image URL and camera label
-            await notifyDiscord(triggerType, resolvedEvent.image_url, timestamp, notes, detectedCamId || activeCameraId);
+          // Update camera's lastSeen
+          setCameras(prev => prev.map(c =>
+            c.id === detectedCamId ? { ...c, lastSeen: Date.now() } : c
+          ));
 
-            // If all cameras have responded, we can clear the timeout early
-            if (respondedCameras.size === camerasToTrigger.length) {
-              clearTimeout(photoTimeout);
-              supabase.removeChannel(photoChannel);
-            }
-          })
-          .subscribe();
+          // In single camera mode, resolve as soon as primary responds
+          if (cameraMode === 'single' && detectedCamId === primaryCameraId) {
+            clearTimeout(photoTimeout);
+            photoResolved = true;
+            supabase.removeChannel(photoChannel);
+            await notifyDiscordSingle(triggerType, resolvedEvent.image_url, timestamp, notes, camLabel);
+          }
 
-        // Dispatch commands to all cameras in bulk
-        const commands = camerasToTrigger.map(camId => ({
-          camera_id: camId,
-          command: 'capture',
-          status: 'pending',
-          correlation_id: correlationId,
-          trigger_type: triggerType,
-          notes: notes
-        }));
+          // In multi mode, resolve when all active cameras have responded
+          if (cameraMode === 'multi' && respondedCameras.size >= targetCameraIds.length) {
+            clearTimeout(photoTimeout);
+            photoResolved = true;
+            supabase.removeChannel(photoChannel);
+            await notifyDiscordMulti(triggerType, timestamp, notes, respondedImages);
+          }
+        })
+        .subscribe();
 
-        const { error: cmdError } = await supabase
-          .from('camera_commands')
-          .insert(commands);
+      // Dispatch commands
+      const commands = targetCameraIds.map(camId => ({
+        camera_id: camId,
+        command: 'capture',
+        status: 'pending',
+        correlation_id: correlationId,
+        trigger_type: triggerType,
+        notes: notes
+      }));
 
-        if (cmdError) throw cmdError;
+      const { error: cmdError } = await supabase
+        .from('camera_commands')
+        .insert(commands);
 
-        console.log(`Dispatched commands to cameras: ${camerasToTrigger.join(', ')}`);
+      if (cmdError) throw cmdError;
 
-      } catch (e) {
-        console.error('Failed to trigger remote cameras:', e);
-        // Fallback to notify Discord immediately without picture
-        await notifyDiscord(triggerType, null, timestamp, `${notes} (Error dispatching camera commands: ${e})`);
-      }
+      console.log(`Dispatched commands to cameras: ${targetCameraIds.join(', ')}`);
+
+    } catch (e) {
+      console.error('Failed to trigger remote cameras:', e);
+      await notifyDiscordSingle(triggerType, null, timestamp, `${notes} (Error dispatching camera commands: ${e})`, null);
     }
   };
 
-  // Helper to capture frame from local webcam and upload
+  // Helper: capture from local webcam
   const captureLocalWebcam = async (correlationId: string, triggerType: string, notes: string) => {
     if (!videoRef.current || !canvasRef.current) return;
 
@@ -427,76 +512,62 @@ export default function SimulationPage() {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // Draw current video frame
       canvas.width = video.videoWidth || 640;
       canvas.height = video.videoHeight || 480;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Convert to JPEG Blob
       canvas.toBlob(async (blob) => {
         if (!blob) return;
 
         const timestampStr = Date.now();
         const filePath = `local-webcam/${timestampStr}.jpg`;
 
-        // Upload to Supabase Storage
         const { error: uploadError } = await supabase.storage
           .from('drop-captures')
           .upload(filePath, blob, { contentType: 'image/jpeg' });
 
         if (uploadError) throw uploadError;
 
-        // Get Public URL
         const { data: urlData } = supabase.storage
           .from('drop-captures')
           .getPublicUrl(filePath);
 
         const imageUrl = urlData.publicUrl;
-        console.log('Local webcam frame uploaded successfully:', imageUrl);
         setLastCapturedImage(imageUrl);
 
         const fullNotes = `${notes} (Captured via local webcam)`;
 
-        // Insert into Events DB
-        const { error: eventError } = await supabase
-          .from('events')
-          .insert({
-            trigger_type: triggerType,
-            image_url: imageUrl,
-            notes: fullNotes,
-            correlation_id: correlationId
-          });
+        await supabase.from('events').insert({
+          trigger_type: triggerType,
+          image_url: imageUrl,
+          notes: fullNotes,
+          correlation_id: correlationId
+        });
 
-        if (eventError) throw eventError;
-
-        // Send Discord Webhook
-        await notifyDiscord(triggerType, imageUrl, Date.now(), fullNotes, 'Laptop Webcam');
+        await notifyDiscordSingle(triggerType, imageUrl, Date.now(), fullNotes, 'Laptop Webcam');
 
       }, 'image/jpeg', 0.85);
 
     } catch (e) {
       console.error('Failed capturing local webcam:', e);
-      await notifyDiscord(triggerType, null, Date.now(), `${notes} (Local webcam capture failed)`);
+      await notifyDiscordSingle(triggerType, null, Date.now(), `${notes} (Local webcam capture failed)`, null);
     }
   };
 
-  // Helper to call local Next.js secure API route to deliver Discord notification
-  const notifyDiscord = async (triggerType: string, imageUrl: string | null, timestamp: number, notes: string, cameraId?: string) => {
+  // Helper: single Discord notification
+  const notifyDiscordSingle = async (triggerType: string, imageUrl: string | null, timestamp: number, notes: string, cameraLabel?: string | null) => {
     try {
       const response = await fetch('/api/notify', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           trigger_type: triggerType,
           image_url: imageUrl,
           timestamp: timestamp,
           notes: notes,
-          camera_id: cameraId
+          camera_id: cameraLabel || undefined,
         }),
       });
-
       if (!response.ok) {
         console.error('Discord notification failed:', await response.text());
       } else {
@@ -507,13 +578,44 @@ export default function SimulationPage() {
     }
   };
 
+  // Helper: multi-camera Discord notification (one webhook call, multiple embeds)
+  const notifyDiscordMulti = async (
+    triggerType: string,
+    timestamp: number,
+    notes: string,
+    images: { camId: string; imageUrl: string; label: string }[]
+  ) => {
+    try {
+      const embedPayloads = images.map(img => ({
+        label: img.label,
+        image_url: img.imageUrl,
+      }));
+
+      const response = await fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          trigger_type: triggerType,
+          timestamp: timestamp,
+          notes: notes,
+          embeds: embedPayloads,
+        }),
+      });
+      if (!response.ok) {
+        console.error('Multi-camera Discord notification failed:', await response.text());
+      } else {
+        console.log('Multi-camera Discord notification sent successfully.');
+      }
+    } catch (e) {
+      console.error('Failed sending multi-camera notification:', e);
+    }
+  };
+
   // 8. Keypad and Switch Handlers
   const handleKeyPress = (key: string) => {
-    // Silently ignore keypresses during cooldown (no beep, no dispatch)
     if (state.inCooldown) return;
 
     if (!audioUnlocked) {
-      // Unlocks browser audio policy
       playInputBeep();
       setAudioUnlocked(true);
     } else {
@@ -557,15 +659,92 @@ export default function SimulationPage() {
     dispatch({ type: 'FIRE_MANUAL_TEST' });
   };
 
+  // Camera management
   const handleAddCamera = () => {
-    if (newCameraId && !cameraIds.includes(newCameraId)) {
-      const updated = [...cameraIds, newCameraId];
-      setCameraIds(updated);
-      setActiveCameraId(newCameraId);
-      setNewCameraId('');
-      // Persist to localStorage
-      localStorage.setItem('drop_camera_ids', JSON.stringify(updated));
+    if (!newCameraId) return;
+    if (cameras.find(c => c.id === newCameraId)) return;
+
+    const updated: Camera[] = [...cameras, {
+      id: newCameraId,
+      active: true,
+      lastSeen: null,
+      label: `Camera ${newCameraId}`,
+    }];
+    setCameras(updated);
+    if (!primaryCameraId) setPrimaryCameraId(newCameraId);
+    setNewCameraId('');
+    persistCameras(updated, cameraMode, primaryCameraId || newCameraId);
+  };
+
+  const handleRemoveCamera = (id: string) => {
+    const updated = cameras.filter(c => c.id !== id);
+    setCameras(updated);
+    if (primaryCameraId === id) {
+      // Auto-select next active camera
+      const next = updated.find(c => c.active);
+      setPrimaryCameraId(next ? next.id : null);
     }
+    persistCameras(updated, cameraMode, primaryCameraId === id ? (updated.find(c => c.active)?.id || null) : primaryCameraId);
+    if (showQRForCamera === id) setShowQRForCamera(null);
+  };
+
+  const handleToggleCameraActive = (id: string) => {
+    const updated = cameras.map(c =>
+      c.id === id ? { ...c, active: !c.active } : c
+    );
+    setCameras(updated);
+    // If we deactivated the primary, auto-select another
+    if (id === primaryCameraId && updated.find(c => c.id === id)?.active === false) {
+      const next = updated.find(c => c.active);
+      const newPrimary = next ? next.id : null;
+      setPrimaryCameraId(newPrimary);
+      persistCameras(updated, cameraMode, newPrimary);
+    } else {
+      persistCameras(updated, cameraMode, primaryCameraId);
+    }
+  };
+
+  const handleSetPrimary = (id: string) => {
+    setPrimaryCameraId(id);
+    persistCameras(cameras, cameraMode, id);
+  };
+
+  const handleLabelChange = (id: string, newLabel: string) => {
+    const updated = cameras.map(c =>
+      c.id === id ? { ...c, label: newLabel } : c
+    );
+    setCameras(updated);
+    persistCameras(updated, cameraMode, primaryCameraId);
+  };
+
+  const handleModeChange = (mode: 'single' | 'multi') => {
+    setCameraMode(mode);
+    persistCameras(cameras, mode, primaryCameraId);
+  };
+
+  const handleRemoveOffline = () => {
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+    const updated = cameras.filter(c => {
+      if (!c.active) return false; // always remove inactive
+      if (c.lastSeen === null) return false; // never seen = offline
+      return c.lastSeen >= fiveMinutesAgo;
+    });
+    setCameras(updated);
+    if (primaryCameraId && !updated.find(c => c.id === primaryCameraId)) {
+      const next = updated.find(c => c.active);
+      const newPrimary = next ? next.id : null;
+      setPrimaryCameraId(newPrimary);
+      persistCameras(updated, cameraMode, newPrimary);
+    } else {
+      persistCameras(updated, cameraMode, primaryCameraId);
+    }
+  };
+
+  const getCamStatusDot = (cam: Camera) => {
+    if (!cam.active) return 'inactive';
+    if (cam.lastSeen === null) return 'unknown';
+    const fiveMin = Date.now() - 5 * 60 * 1000;
+    return cam.lastSeen >= fiveMin ? 'active' : 'unknown';
   };
 
   const handleUpdatePins = () => {
@@ -644,18 +823,8 @@ export default function SimulationPage() {
               </div>
 
               <div className="flex gap-3 justify-end mt-4">
-                <button
-                  onClick={() => setShowPinSettings(false)}
-                  className="btn btn-secondary"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleUpdatePins}
-                  className="btn btn-primary"
-                >
-                  Save PINs
-                </button>
+                <button onClick={() => setShowPinSettings(false)} className="btn btn-secondary">Cancel</button>
+                <button onClick={handleUpdatePins} className="btn btn-primary">Save PINs</button>
               </div>
             </div>
           </div>
@@ -671,9 +840,7 @@ export default function SimulationPage() {
               Virtual DROP Box Hardware
             </h2>
 
-            {/* Displays Row */}
             <div className="flex flex-col gap-4">
-
               {/* LCD 16x2 Emulation */}
               <div className="lcd-container">
                 <div className="text-[10px] text-gray-500 mb-1 font-mono uppercase tracking-wider">LiquidCrystal I2C 16x2</div>
@@ -700,7 +867,6 @@ export default function SimulationPage() {
                   </div>
                 </div>
               </div>
-
             </div>
 
             {/* Lock Latch Visualizer */}
@@ -733,70 +899,53 @@ export default function SimulationPage() {
                 ))}
               </div>
             </div>
-
           </section>
 
-          {/* Column 2: Physical Hardware Sensors & Remote Controls */}
+          {/* Column 2: Sensors & Controls */}
           <section className="glass-card">
             <h2 className="card-title text-cyan-500">
               <Sliders size={18} />
               Sensors & Overrides
             </h2>
 
-            {/* Sensor switches */}
             <div className="flex flex-col gap-4">
               <h3 className="text-xs text-gray-400 font-bold uppercase tracking-wider">GPIO Pin Simulator</h3>
 
-              {/* Lid Switch */}
               <div className="switch-control">
                 <div className="switch-label">
                   <span className="switch-label-title">Lid Limit Switch (GPIO 13)</span>
                   <span className="switch-label-desc">Simulates physical drop box lid open/close</span>
                 </div>
                 <label className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={state.lidClosed}
-                    onChange={handleLidToggle}
-                  />
+                  <input type="checkbox" checked={state.lidClosed} onChange={handleLidToggle} />
                   <span className="toggle-slider" />
                 </label>
               </div>
 
-              {/* Weight Switch */}
               <div className="switch-control">
                 <div className="switch-label">
                   <span className="switch-label-title">Parcel Weight Sensor</span>
                   <span className="switch-label-desc">Detects if a package is loaded inside</span>
                 </div>
                 <label className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={state.parcelPresent}
-                    onChange={handleWeightToggle}
-                  />
+                  <input type="checkbox" checked={state.parcelPresent} onChange={handleWeightToggle} />
                   <span className="toggle-slider" />
                 </label>
               </div>
 
-              {/* Tilt Switch */}
               <div className="switch-control">
                 <div className="switch-label">
                   <span className="switch-label-title">Tilt Tamper Sensor (GPIO 12)</span>
-                  <span className="switch-label-desc">Shaking triggers tamper alarm in &gt;200ms</span>
+                  <span className="switch-label-desc">Shaking triggers tamper alarm in >200ms</span>
                 </div>
                 <label className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={state.tiltDetected}
-                    onChange={handleTiltToggle}
-                  />
+                  <input type="checkbox" checked={state.tiltDetected} onChange={handleTiltToggle} />
                   <span className="toggle-slider danger-slider" />
                 </label>
               </div>
             </div>
 
-            {/* Cooldown Progress Bar (only visible during cooldown) */}
+            {/* Cooldown Progress Bar */}
             {state.inCooldown && (
               <div className="flex flex-col gap-2 mt-2">
                 <div className="flex justify-between items-center">
@@ -804,55 +953,34 @@ export default function SimulationPage() {
                   <span className="text-xs font-mono text-red-400">{state.remainingCountdown}s</span>
                 </div>
                 <div className="cooldown-bar-bg">
-                  <div
-                    className="cooldown-bar-fill"
-                    style={{ width: `${(state.remainingCountdown / 30) * 100}%` }}
-                  />
+                  <div className="cooldown-bar-fill" style={{ width: `${(state.remainingCountdown / 30) * 100}%` }} />
                 </div>
               </div>
             )}
 
-            {/* Remote Commands Section */}
+            {/* Remote Commands */}
             <div className="flex flex-col gap-3 mt-4 border-t border-white/5 pt-4">
               <h3 className="text-xs text-gray-400 font-bold uppercase tracking-wider">Remote Owner Actions</h3>
-
               <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={handleRemoteUnlock}
-                  className="btn btn-secondary flex-1"
-                  disabled={state.isTampering}
-                >
+                <button onClick={handleRemoteUnlock} className="btn btn-secondary flex-1" disabled={state.isTampering}>
                   <Unlock size={14} className="text-emerald-500" />
                   Remote Unlock
                 </button>
-                <button
-                  onClick={handleRemoteLock}
-                  className="btn btn-secondary flex-1"
-                  disabled={state.isTampering}
-                >
+                <button onClick={handleRemoteLock} className="btn btn-secondary flex-1" disabled={state.isTampering}>
                   <Lock size={14} className="text-rose-500" />
                   Remote Lock
                 </button>
               </div>
-
-              <button
-                onClick={handleManualTestNotification}
-                className="btn btn-primary w-full mt-2"
-                disabled={state.isTampering}
-              >
+              <button onClick={handleManualTestNotification} className="btn btn-primary w-full mt-2" disabled={state.isTampering}>
                 <BellRing size={16} />
                 Send Manual Test Alert
               </button>
             </div>
 
-            {/* Sound notification info */}
             <div className="bg-slate-900/60 border border-white/5 rounded-lg p-3 text-[11px] text-gray-400 mt-auto flex gap-2">
               <Info size={16} className="text-amber-500 shrink-0" />
-              <p>
-                Beeps require a user click on the page to unlock browser audio. Click any keypad key to activate audio.
-              </p>
+              <p>Beeps require a user click on the page to unlock browser audio. Click any keypad key to activate audio.</p>
             </div>
-
           </section>
 
           {/* Column 3: Cameras & CCTV Management */}
@@ -869,11 +997,7 @@ export default function SimulationPage() {
                 <span className="switch-label-desc">Use this machine's camera as the CCTV</span>
               </div>
               <label className="toggle-switch">
-                <input
-                  type="checkbox"
-                  checked={webcamFallback}
-                  onChange={e => setWebcamFallback(e.target.checked)}
-                />
+                <input type="checkbox" checked={webcamFallback} onChange={e => setWebcamFallback(e.target.checked)} />
                 <span className="toggle-slider" />
               </label>
             </div>
@@ -881,99 +1005,152 @@ export default function SimulationPage() {
             {/* Webcam Video Viewfinder */}
             {webcamFallback && (
               <div className="camera-preview-container flex items-center justify-center">
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full h-full object-cover scale-x-[-1]"
-                />
+                <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover scale-x-[-1]" />
                 <div className="absolute top-2 left-2 bg-emerald-500 text-black font-extrabold text-[9px] px-2 py-0.5 rounded tracking-wide animate-pulse uppercase">
                   Local Live CCTV
                 </div>
               </div>
             )}
 
-            {/* Phone Cameras List */}
+            {/* Mode Toggle + Camera controls (only when webcam is OFF) */}
             {!webcamFallback && (
               <div className="flex flex-col gap-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs text-gray-400 font-bold uppercase tracking-wider">Linked Phone Cameras</span>
+                {/* Mode Toggle */}
+                <div className="flex items-center gap-2 bg-slate-900/60 border border-white/5 rounded-lg p-2">
+                  <span className="text-xs text-gray-400 font-bold uppercase tracking-wider mr-1">Mode:</span>
+                  <button
+                    onClick={() => handleModeChange('single')}
+                    className={`text-xs px-3 py-1.5 rounded font-semibold transition-all ${cameraMode === 'single' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-gray-400 hover:text-white'}`}
+                  >
+                    <Radio size={12} className="inline mr-1" />
+                    Single
+                  </button>
+                  <button
+                    onClick={() => handleModeChange('multi')}
+                    className={`text-xs px-3 py-1.5 rounded font-semibold transition-all ${cameraMode === 'multi' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-gray-400 hover:text-white'}`}
+                  >
+                    <Camera size={12} className="inline mr-1" />
+                    Multi-Angle
+                  </button>
                 </div>
 
-                <div className="flex flex-col gap-2">
-                  {cameraIds.map(camId => (
+                {/* Primary Camera Selector (single mode only) */}
+                {cameraMode === 'single' && cameras.filter(c => c.active).length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400 font-bold uppercase">Primary:</span>
+                    <select
+                      value={primaryCameraId || ''}
+                      onChange={e => handleSetPrimary(e.target.value)}
+                      className="bg-slate-900 border border-white/10 rounded p-1.5 text-xs text-white grow focus:outline-none focus:border-purple-500"
+                    >
+                      {cameras.filter(c => c.active).map(c => (
+                        <option key={c.id} value={c.id}>{c.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Camera List */}
+                <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
+                  {cameras.length === 0 && (
+                    <div className="text-xs text-gray-500 text-center py-2">No cameras linked. Add one below.</div>
+                  )}
+                  {cameras.map(cam => (
                     <div
-                      key={camId}
-                      className={`flex justify-between items-center p-2 rounded-lg text-sm border ${activeCameraId === camId
-                        ? 'border-purple-500/50 bg-purple-500/5'
+                      key={cam.id}
+                      className={`flex flex-col p-2 rounded-lg text-sm border ${primaryCameraId === cam.id && cameraMode === 'single'
+                        ? 'border-purple-500/50 bg-purple-500/10'
                         : 'border-white/5 bg-white/2'
                         }`}
                     >
                       <div className="flex items-center gap-2">
-                        <Smartphone size={14} className={activeCameraId === camId ? 'text-purple-400' : 'text-gray-400'} />
-                        <span className="font-bold text-gray-200">{camId}</span>
+                        <span className={`camera-status-dot ${getCamStatusDot(cam)}`} />
+                        <input
+                          type="text"
+                          value={cam.label}
+                          onChange={e => handleLabelChange(cam.id, e.target.value)}
+                          className="bg-transparent border-none text-gray-200 font-bold text-xs grow focus:outline-none focus:text-purple-300"
+                          maxLength={24}
+                        />
+                        <span className="text-[9px] text-gray-600 font-mono">{cam.id}</span>
                       </div>
+                      <div className="flex items-center gap-1 mt-1">
+                        {/* Active toggle */}
+                        <label className="toggle-switch" style={{ width: 30, height: 16 }}>
+                          <input
+                            type="checkbox"
+                            checked={cam.active}
+                            onChange={() => handleToggleCameraActive(cam.id)}
+                          />
+                          <span className="toggle-slider" style={{ height: 16 }} />
+                        </label>
+                        <span className="text-[9px] text-gray-500 mr-2">{cam.active ? 'ON' : 'OFF'}</span>
 
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setActiveCameraId(camId)}
-                          className={`text-xs px-2 py-1 rounded font-semibold ${activeCameraId === camId
-                            ? 'bg-purple-600 text-white'
-                            : 'bg-slate-800 text-gray-400 hover:text-white'
-                            }`}
-                        >
-                          Select
-                        </button>
+                        {/* Set Primary button (single mode) */}
+                        {cameraMode === 'single' && cam.active && (
+                          <button
+                            onClick={() => handleSetPrimary(cam.id)}
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${primaryCameraId === cam.id
+                              ? 'bg-purple-700 text-white'
+                              : 'bg-slate-800 text-gray-400 hover:text-white'
+                              }`}
+                          >
+                            {primaryCameraId === cam.id ? 'PRIMARY' : 'SET'}
+                          </button>
+                        )}
 
+                        {/* QR Code button */}
                         <button
-                          onClick={() => setShowQRForCamera(showQRForCamera === camId ? null : camId)}
-                          className="bg-slate-800 hover:bg-slate-700 text-gray-300 p-1 rounded"
+                          onClick={() => setShowQRForCamera(showQRForCamera === cam.id ? null : cam.id)}
+                          className="bg-slate-800 hover:bg-slate-700 text-gray-300 p-1 rounded ml-auto"
                           title="Generate QR / Link"
                         >
-                          <ExternalLink size={12} />
+                          <ExternalLink size={10} />
+                        </button>
+
+                        {/* Remove button */}
+                        <button
+                          onClick={() => handleRemoveCamera(cam.id)}
+                          className="bg-slate-800 hover:bg-red-900 text-gray-400 hover:text-red-300 p-1 rounded"
+                          title="Remove camera"
+                        >
+                          <Trash2 size={10} />
                         </button>
                       </div>
                     </div>
                   ))}
                 </div>
 
-                {/* Add new camera ID */}
+                {/* Add new camera */}
                 <div className="flex gap-2">
                   <input
                     type="text"
                     value={newCameraId}
-                    onChange={e => setNewCameraId(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, ''))}
-                    placeholder="e.g. phone2"
+                    onChange={e => setNewCameraId(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+                    placeholder="e.g. phone1"
                     className="bg-slate-900 border border-white/10 rounded p-1.5 text-xs text-white grow"
                   />
-                  <button
-                    onClick={handleAddCamera}
-                    className="btn btn-secondary !p-1.5"
-                  >
+                  <button onClick={handleAddCamera} className="btn btn-secondary !p-1.5">
                     <Plus size={14} />
                   </button>
                 </div>
 
+                {/* Remove Offline button */}
+                {cameras.some(c => !c.active || c.lastSeen === null) && (
+                  <button onClick={handleRemoveOffline} className="text-[10px] text-red-400 hover:text-red-300 underline self-end">
+                    Remove offline cameras
+                  </button>
+                )}
+
                 {/* QR Code Popup */}
                 {showQRForCamera && (
                   <div className="qr-container">
-                    <span className="text-xs text-gray-300 font-bold uppercase">Scan to connect {showQRForCamera}</span>
+                    <span className="text-xs text-gray-300 font-bold uppercase">Connect {cameras.find(c => c.id === showQRForCamera)?.label || showQRForCamera}</span>
                     <div className="qr-placeholder">
-                      <QRCodeSVG
-                        value={`${cameraUrlHost}/camera?camera_id=${showQRForCamera}`}
-                        size={120}
-                        level="M"
-                      />
+                      <QRCodeSVG value={`${cameraUrlHost}/camera?camera_id=${showQRForCamera}`} size={120} level="M" />
                     </div>
-                    <a
-                      href={`/camera?camera_id=${showQRForCamera}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-purple-400 hover:underline inline-flex items-center gap-1"
-                    >
-                      Open Camera Link Directly
-                      <ExternalLink size={10} />
+                    <a href={`/camera?camera_id=${showQRForCamera}`} target="_blank" rel="noreferrer" className="text-xs text-purple-400 hover:underline inline-flex items-center gap-1">
+                      Open Camera Link Directly <ExternalLink size={10} />
                     </a>
                   </div>
                 )}
@@ -983,15 +1160,10 @@ export default function SimulationPage() {
             {/* Last Captured Image Preview */}
             <div className="flex flex-col gap-2 border-t border-white/5 pt-4">
               <span className="text-xs text-gray-400 font-bold uppercase tracking-wider">CCTV Capture Frame</span>
-
               <div className="camera-preview-container">
                 {lastCapturedImage ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={lastCapturedImage}
-                    alt="Last CCTV Capture"
-                    className="camera-preview-img"
-                  />
+                  <img src={lastCapturedImage} alt="Last CCTV Capture" className="camera-preview-img" />
                 ) : (
                   <div className="w-full h-full flex flex-col justify-center items-center gap-2 text-gray-500 text-xs">
                     <Camera size={24} />
@@ -1000,9 +1172,7 @@ export default function SimulationPage() {
                 )}
               </div>
             </div>
-
           </section>
-
         </div>
 
         {/* Row 2: Event Logs */}
@@ -1034,14 +1204,8 @@ export default function SimulationPage() {
                     </div>
                     <p className="text-gray-300 font-light mt-0.5">{evt.notes}</p>
                     {evt.image_url && (
-                      <a
-                        href={evt.image_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[10px] text-purple-400 hover:underline mt-1 inline-flex items-center gap-1 w-fit"
-                      >
-                        View Full Screen Snapshot
-                        <ExternalLink size={8} />
+                      <a href={evt.image_url} target="_blank" rel="noreferrer" className="text-[10px] text-purple-400 hover:underline mt-1 inline-flex items-center gap-1 w-fit">
+                        View Full Screen Snapshot <ExternalLink size={8} />
                       </a>
                     )}
                   </div>
@@ -1050,7 +1214,6 @@ export default function SimulationPage() {
             )}
           </div>
         </section>
-
       </div>
 
       {/* Hidden canvas for webcam capture */}
