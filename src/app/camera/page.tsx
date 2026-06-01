@@ -10,6 +10,7 @@ function CameraClient() {
   const cameraId = searchParams.get('camera_id') || 'phone1';
   
   const [streamActive, setStreamActive] = useState(false);
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const [logs, setLogs] = useState<string[]>([]);
   const [lastCapturedImage, setLastCapturedImage] = useState<string | null>(null);
   const [flashActive, setFlashActive] = useState(false);
@@ -24,16 +25,20 @@ function CameraClient() {
     setLogs(prev => [`[${time}] ${msg}`, ...prev.slice(0, 19)]);
   };
 
-  // 1. Initial Load: Request video stream permission
+  // 1. Initial Load & Camera Toggle: Request video stream permission
   useEffect(() => {
-    addLog(`Initializing camera node "${cameraId}"...`);
+    addLog(`Initializing camera node "${cameraId}" (${facingMode} facing)...`);
     
+    // Stop any existing streams before requesting a new one
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+
     async function startCamera() {
       try {
-        // Request back-facing camera if possible for real phone usage
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: 'environment',
+            facingMode: facingMode,
             width: { ideal: 1280 },
             height: { ideal: 720 }
           },
@@ -45,10 +50,10 @@ function CameraClient() {
           videoRef.current.srcObject = stream;
         }
         setStreamActive(true);
-        addLog('CCTV Video Feed Active (Facing: Environment/Auto)');
+        addLog(`CCTV Video Feed Active (Facing: ${facingMode})`);
       } catch (err: any) {
         addLog(`Camera Access Error: ${err.message || err}`);
-        // Fallback to basic video request if environment fails
+        // Fallback to basic video request if preferred mode fails
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
           streamRef.current = stream;
@@ -70,7 +75,7 @@ function CameraClient() {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
     };
-  }, [cameraId]);
+  }, [cameraId, facingMode]);
 
   // 2. Subscribe to Supabase Realtime Commands
   useEffect(() => {
@@ -208,6 +213,10 @@ function CameraClient() {
     }
   };
 
+  const toggleCamera = () => {
+    setFacingMode(prev => prev === 'environment' ? 'user' : 'environment');
+  };
+
   return (
     <main className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4">
       {flashActive && (
@@ -225,9 +234,17 @@ function CameraClient() {
               <span className="text-[10px] text-gray-500 font-mono">NODE ID: {cameraId}</span>
             </div>
           </div>
-          <div className="flex items-center gap-2 bg-slate-900 border border-white/5 px-2.5 py-1 rounded text-[10px]">
-            <span className={`status-dot ${dbConnected ? 'active' : 'inactive'}`} />
-            <span className="text-gray-400 font-mono">{dbConnected ? 'CONNECTED' : 'DISCONNECTED'}</span>
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex items-center gap-2 bg-slate-900 border border-white/5 px-2.5 py-1 rounded text-[10px]">
+              <span className={`status-dot ${dbConnected ? 'active' : 'inactive'}`} />
+              <span className="text-gray-400 font-mono">{dbConnected ? 'CONNECTED' : 'DISCONNECTED'}</span>
+            </div>
+            <button 
+              onClick={toggleCamera}
+              className="text-[10px] bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded shadow"
+            >
+              Flip Camera
+            </button>
           </div>
         </div>
 
@@ -239,7 +256,8 @@ function CameraClient() {
               autoPlay 
               playsInline 
               muted 
-              className="w-full h-full object-cover"
+              onLoadedMetadata={() => videoRef.current?.play()}
+              className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`}
             />
           ) : (
             <div className="flex flex-col items-center gap-2 text-gray-500 text-sm">
