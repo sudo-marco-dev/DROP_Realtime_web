@@ -74,6 +74,7 @@ export default function SimulationPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const notifiedEvents = useRef<Set<string>>(new Set());
 
   // Audio Context lock
   const [audioUnlocked, setAudioUnlocked] = useState(false);
@@ -266,8 +267,14 @@ export default function SimulationPage() {
     const eventsChannel = supabase
       .channel('public:events')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'events' }, (payload: any) => {
-        setEventsList(prev => [payload.new, ...prev]);
-        if (payload.new.image_url) setLastCapturedImage(payload.new.image_url);
+        const evt = payload.new;
+        setEventsList(prev => [evt, ...prev]);
+        if (evt.image_url && !notifiedEvents.current.has(evt.id)) {
+          setLastCapturedImage(evt.image_url);
+          notifiedEvents.current.add(evt.id);
+          // Send Discord notification for any new capture event (ESP32 or dashboard triggered)
+          notifyDiscordSingle(evt.trigger_type || 'REMOTE_TRIGGER', evt.image_url, new Date(evt.timestamp).getTime(), evt.notes || 'Event captured', 'Camera');
+        }
       })
       .subscribe();
 
