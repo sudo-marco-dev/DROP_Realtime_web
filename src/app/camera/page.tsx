@@ -329,6 +329,22 @@ function CameraClient() {
         }
 
         addLog(`Transaction completed for correlation: ${cmd.correlation_id}`);
+
+        // Send Discord notification directly from the phone
+        try {
+          const resp = await fetch('/api/notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              trigger_type: cmd.trigger_type || 'REMOTE_TRIGGER',
+              image_url: imageUrl,
+              timestamp: Date.now(),
+              notes: triggerNotes,
+              camera_id: cameraId
+            })
+          });
+          if (resp.ok) addLog('Discord notification sent!');
+        } catch (e) { addLog('Discord notify error'); }
       }, 'image/jpeg', 0.85);
 
     } catch (e: any) {
