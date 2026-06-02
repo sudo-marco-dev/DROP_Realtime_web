@@ -95,6 +95,18 @@ export default function MonitorPage() {
                     };
                     setSnaps(prev => [newSnap, ...prev]);
                     setActiveSnapIdx(0);
+                    // Send Discord notification
+                    fetch('/api/notify', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            trigger_type: evt.trigger_type,
+                            image_url: evt.image_url,
+                            timestamp: evt.timestamp || Date.now(),
+                            notes: evt.notes,
+                            camera_id: extractCamId(evt.notes) || 'camera'
+                        })
+                    }).catch(() => { });
                 }
             }
         }).subscribe();
